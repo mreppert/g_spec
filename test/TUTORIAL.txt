@@ -1,0 +1,147 @@
+For the purposes of this tutorial, navigate at the command prompt to the test
+directory; e.g. if g_spec is installed under /home/mike/apps/g_spec enter
+
+	cd /home/mike/apps/g_spec/test
+
+g_spec is capable of simulating spectra following three basic routines. We
+will provide simple examples for all three, making use of the input files
+located in the test/input folder. 
+
+INPUT FILES
+
+g_spec requires several input files to carry out spectroscopic simulations.
+These files are most easily generated using the sister program g_amide, which
+begins with a molecular dynamics (MD) trajectory and converts the structural
+trajectory to spectroscopic simulation parameters for the Amide I vibrational
+modes of the system. Example files are provided here for instructive purposes.
+To see them, enter at the console
+
+	ls -ahl test/
+
+You should see listed something like the following 
+
+-rw-rw-r-- 1 mreppert pi-tokmakoff 281K 2016-04-05 11:31 dipx.txt
+-rw-rw-r-- 1 mreppert pi-tokmakoff 281K 2016-04-05 11:31 dipy.txt
+-rw-rw-r-- 1 mreppert pi-tokmakoff 281K 2016-04-05 11:31 dipz.txt
+-rw-rw-r-- 1 mreppert pi-tokmakoff 574K 2016-04-05 11:31 ham.txt
+-rw-rw-r-- 1 mreppert pi-tokmakoff   33 2016-04-05 11:31 info.txt
+-rw-rw-r-- 1 mreppert pi-tokmakoff 306K 2016-04-05 11:31 sites.txt
+
+The first three files contained in the test folder are the dipole moment files
+dipx.txt, dipy.txt, and dipz.txt. These files contain transition dipole moment
+trajectories for the oscillators in our system. The example files included are
+for a two-site system, the C=O amide bond vibrations of the AAA tripeptide.
+Each dipole file thus contains two columns of data, one for each
+oscillator. Each line in the file represents a single snapshot in time, taken
+from an MD simulation and spaced in our data by 20 fs time steps. This dynamic
+trajectory data serves as the input for g_spec to run spectroscopic
+simulations. 
+
+The largest file in our installation folder is ham.txt, the Hamiltonian
+trajectory for our system. In a two-site system like the AAA tripeptide, the
+Hamiltonian contains 2x2=4 columns, two for the site energies (frequencies) of
+the two sites, and two for the coupling elements between the two sites. In
+general, for an N-site system, the Hamiltonian file will contain NxN columns.
+N columns correspond to diagonal entries (site energies) in the Hamiltonian
+matix; these site energy columns are each separated by N off-diagonal
+(coupling constant) columns specifying the interactions between each site. 
+
+The sites.txt file contains only the diagonal entries from the Hamiltonian
+matrix. It is not required for calculations, but is often more convenient to
+work with and modify than the entire Hamiltonian file. Using the -sites flag,
+a site energy file may be used to replace the diagonal entries of the
+Hamiltonian matrix on the fly, without modifying the Hamiltonian file itself. 
+
+Finally, the file info.txt provides information about the chemical identify of
+the sites in the system. In our case the info.txt file tells us that the two
+sites in our simulation correspond to two ALA-ALA bonds. This file is again
+not required for simulation but can be helpful in processing program output. 
+
+
+SYNTAX
+
+The default simulation method for g_spec is the simplest, fastest, but least
+accurate method for line shape calculations, known as the "stick spectrum"
+method. Here each frame in the Hamiltonian/dipole moment trajectory is
+processed separately, ignoring completely the frame-to-frame dynamics of the
+system. To simulate a spectrum using this method, enter at the command line
+simply 
+
+
+	../src/g_spec -deffnm input/ -outname output/
+
+Note that here we have explicitly pointed to the src directory containing our
+g_spec installation. If you have already set your system environmen to include
+the g_spec binary directory in your system path, you can remove the beginning
+../src/ prefix. 
+
+Checking the output directory
+
+	ls -ahl output/
+
+you should see three files, ftir.txt, waxis.txt, and log.txt. The log file
+contains primarily computation time information, allowing you to monitor
+progress through long calculations. The file waxis.txt provides a frequency
+axis for the simulated spectra, while ftir.txt provides the simulated
+absorption intensity as a function of frequency. You can plot the spectrum
+using the program xmgrace if it is installed on your system. For example,
+entering the command 
+
+	 paste output/waxis.txt output/ftir.txt | xmgrace -pipe
+
+should provide you with a graphical representation of the ftir spectrum. Note
+that the spectrum is broad and contains no distinct peaks, despite the fact
+that our system contains two distinct sites. The blurring together of our
+signals is due to the simple "stick spectrum" nature of our calculation. 
+
+To obtain a more accurate spectrum, enter at the console 
+
+	../src/g_spec -deffnm input/ -outname output/taa -tstep 20 -tscan 1300
+
+This command instructs g_spec to carry out the simulation within the dynamic
+time-averaging approximation (TAA). The TAA accounts for dynamic effects in an
+approximate way by averaging over the site energy data for multiple frames
+(the number of which is set by the tscan parameter) in each calculation. The
+final calculation, however, is still performed on a single, time-averaged,
+effective frame. The -tstep flag sets the time step between frames in the
+Hamiltonian and dipole moment trajectory files (in femtoseconds). It is
+essential that this time step be accurate (and small relative to the averaging
+time -tscan). Entering at the command line 
+
+	 paste output/taa_waxis.txt output/taa_ftir.txt | xmgrace -pipe
+
+we see that in the new spectrum, we can begin to distinguish separate peaks
+for the two oscillators, although the two signals are still largely blurred
+together. 
+
+
+The most accurate (in fact, numerically exact) simulation available to us is
+the numerical wavefunction propagation scheme commonly known as "Numerical
+integration of the Schrodinger equation" (NISE) method. In this method, an
+excitonic wavefunction is propagated numerically along the system trajectory,
+following the fluctuations encoded in the Hamiltonian and dipole files. For
+the NISE method, we enter at the command line 
+
+	../src/g_spec -deffnm input/ -outname output/nise -tstep 20 -tscan
+10000 -nise
+
+This calculation takes slightly longer, although for a two-syte system, it is
+nonetheless still quite fast. In this method, the -tscan flag sets not an
+averaging window, but the Fourier-transform scan time over which the
+wavefunction is propagated. Shorter scan times give lower frequency resolution
+in the corresponding frequency axis waxis.txt. Plotting our results 
+
+	paste output/nise_waxis.txt output/nise_ftir.txt | xmgrace -pipe
+
+we see that this method gives us the sharpest contrast between the two peaks,
+although the linewidths involved mean that the two peaks still overlap
+considerably. The NISE method is a numerically exact calculation, given the
+input files, and should always be used as a reference when determining whether
+the simpler static or TAA methods are accurate enough for your purposes. 
+
+
+
+
+
+
+

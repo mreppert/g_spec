@@ -1,0 +1,3 @@
+BONDS: 2
+ALA 1 ALA 2
+ALA 2 ALA 3
