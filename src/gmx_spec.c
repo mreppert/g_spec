@@ -28,7 +28,7 @@
 #endif
 
 
-#define DOUBLE_PRECISION
+// #define DOUBLE_PRECISION
 
 #ifdef DOUBLE_PRECISION
 #define GNREAL double
@@ -88,15 +88,6 @@ GNCOMP *U1Qs;
 GNCOMP *cDip1Q[3];
 
 // Generic wavefunctions
-//
-// cjfeng 04/05/2016
-// Swapped the order of the arrays.
-// They should be win2d*3*nosc arrays.
-// The orginal arrays are 3*win2d*nosc.
-// GNCOMP ***psi_a;
-// GNCOMP ***psi_b1;
-// GNCOMP ***psi_b12;
-// The original lines
 GNCOMP **psi_a[3];
 GNCOMP **psi_b1[3];
 GNCOMP **psi_b12[3];
@@ -294,46 +285,6 @@ int trans_real(GNREAL *A, GNREAL *A_t, int nrows, int ncols, int nt) {
 	}
 	return 0;
 }
-// cjfeng 04/06/2016
-// This function is not used at all.
-//
-// int mmult_real(GNREAL *A, GNREAL *B, GNREAL *C, int dim, int nt) {
-// 	int i, j, k;
-// 	if(nt>1) {
-// 		int part_rows, th_id;
-// 		part_rows = dim/nt;
-// 		omp_set_num_threads(nt);
-// 		#if OMP_PARALLEL 
-// 		#pragma omp parallel shared(A, B, C, part_rows, dim) private(th_id, i, j, k)
-// 		#endif
-// 		{
-// 			#if OMP_PARALLEL 
-// 			#pragma omp for schedule(guided,part_rows) nowait
-// 			#endif
-// 			for(i=0; i<dim; i++) {
-// 				for(j=0; j<dim; j++) {
-// 					GNREAL C_private = 0.0;
-// 					for(k=0; k<dim; k++) {
-// 						C_private += A[i*dim+k]*B[k*dim+j];
-// 					}
-// 					C[i*dim+j] = C_private;
-// 				}
-// 			}
-// 		}
-// 	}
-// 	else {
-// 		for(i=0; i<dim; i++) {
-// 			for(k=0; k<dim; k++) {
-// 				GNREAL C_private = 0.0;
-// 				for(j=0; j<dim; j++) {
-// 						C_private += A[i*dim+k]*B[k*dim+j];
-// 				}
-// 				C[i*dim+j] = C_private;
-// 			}
-// 		}
-// 	}
-// 	return 0;
-// }
 
 // cjfeng 03/27/2016
 // Loop tiling or blocking:
@@ -380,67 +331,6 @@ int mmult_comp_block (GNCOMP *A, GNCOMP *B_t, GNCOMP *C, int dim, int nt) {
 	}
 	return 1;
 }
-// This function utilizes the transpose of B to make the original multiplication 
-// cache friendly. It is equivalent with C=A*B, but now the matrices are running
-// row-major. 03/23/2016 cjfeng
-// This function allows the right matrix to be a non-square matrix.
-// Therefore, for C=A*B^T
-// C will be a dimrow-by-dimcol matrix. A will be a dimrow-by-dimrow square matrix,
-// and B^T will be a dimcol-by-dimrow matrix.
-// Especially for propagating wavefunctions, now the dimrow is nosc and the dimcol
-// is 3 for spatial components, but for the consistency, the C matrix will be 
-// transposed inplicitly when assigning values. So indeed the output should be be 
-// C^T. 04/05/2016 cjfeng
-// int mmult_comp_trans(GNCOMP *A, GNCOMP *B_t, GNCOMP *C, int dimrow, int dimcol, char t[1], int nt) {
-// 	int i, j, k;
-// 	int part_rows, th_id;
-// 	const char T[1]="T";
-// 	part_rows = dimrow/nt;
-// 	omp_set_num_threads(nt);
-// 	// Current optimal part_rows (chunk) size should be larger than or equal to 4.
-// 	//if (nt>1 && part_rows >= 4) {
-// 	if (nt>1) {
-// 		#if OMP_PARALLEL 
-// 		#pragma omp parallel shared(A, B_t, C, part_rows, dimrow, dimcol) private(th_id, i, j, k)
-// 		#endif
-// 		{
-// 			#if OMP_PARALLEL 
-// 			#pragma omp for schedule(guided, part_rows) nowait //collapse(2) 
-// 			#endif
-// 			for(i=0; i<dimrow; i++) {
-// 				for(j=0; j<dimcol; j++) {
-// 					GNCOMP C_private = 0.0 + 0.0i;
-// 					for(k=0; k<dimrow; k++) {
-// 						C_private += A[i*dimrow+k]*B_t[j*dimrow+k];
-// 					}
-// 					if(strcmp(T,t)==0) {	// Tranpose C
-// 						C[j*dimrow+i] = C_private;
-// 					}
-// 					else {	// Do not transpose C
-// 						C[i*dimcol+j] = C_private;
-// 					}
-// 				}
-// 			}
-// 		}
-// 	}
-// 	else {
-// 		for(i=0; i<dimrow; i++) {
-// 			for(j=0; j<dimcol; j++) {
-// 				GNCOMP C_private = 0.0 + 0.0i;
-// 				for(k=0; k<dimrow; k++) {
-// 					C_private += A[i*dimrow+k]*B_t[j*dimrow+k];
-// 				}
-// 				if(strcmp(T,t)==0) {	// Tranpose C
-// 					C[j*dimrow+i] = C_private;
-// 				}
-// 				else {	// Do not transpose C
-// 					C[i*dimcol+j] = C_private;
-// 				}
-// 			}
-// 		}
-// 	}
-// 	return 0;
-// }
 
 // cjfeng 03/23/2016
 // This function utilizes the transpose of B to make the original multiplication 
@@ -1450,54 +1340,6 @@ int allocate_all( int window, int win2d, int winzpad, int nosc, int nread, int n
 				} else U1QMat[i] = NULL;
 			}
 		}
-		// cjfeng 04/05/2016
-		// Since the wavefunction is now win2d*3*nosc, the memory allocation changed.
-		// if((!error) && (!no2d) ) {
-		// 	psi_a = (GNCOMP***) malloc(win2d*sizeof(GNCOMP**));
-		// 	psi_b1 = (GNCOMP***) malloc(win2d*sizeof(GNCOMP**));
-		// 	psi_b12 = (GNCOMP***) malloc(win2d*sizeof(GNCOMP**));
-		// 	if(psi_a==NULL) error = 1;
-		// 	if(psi_b1==NULL) error = 1;
-		// 	if(psi_b12==NULL) error = 1;
-		// 	if((!error) && (!no2d) ) {
-		// 		for(j=0; j<win2d; j++) {
-		// 			psi_a[j] = (GNCOMP**) malloc(3*sizeof(GNCOMP*));
-		// 			psi_b1[j] = (GNCOMP**) malloc(3*sizeof(GNCOMP*));
-		// 			psi_b12[j] = (GNCOMP**) malloc(3*sizeof(GNCOMP*));
-		// 			if(psi_a[j]==NULL) error = 1;
-		// 			if(psi_b1[j]==NULL) error = 1;
-		// 			if(psi_b12[j]==NULL) error = 1;
-		// 			for(i=0; i<3; i++){
-		// 				psi_a[j][i] = (GNCOMP*) malloc(nosc*sizeof(GNCOMP));
-		// 				psi_b1[j][i] = (GNCOMP*) malloc(nosc*sizeof(GNCOMP));
-		// 				psi_b12[j][i] = (GNCOMP*) malloc(nosc*sizeof(GNCOMP));
-		// 				if(psi_a[j][i]==NULL) error = 1;
-		// 				if(psi_b1[j][i]==NULL) error = 1;
-		// 				if(psi_b12[j][i]==NULL) error = 1;
-		// 			}
-		// 		}
-		// 		for(j=0; j<win2d; j++) {
-		// 			for(i=0; i<3; i++) {	
-		// 				for(k=0; k<nosc; k++) {
-		// 					psi_a[j][i][k] = 0.0;
-		// 					psi_b1[j][i][k] = 0.0;
-		// 					psi_b12[j][i][k] = 0.0;
-		// 				}
-		// 			}
-		// 		}
-		// 	}
-		// 	else if(psi_a[i]!=NULL) {
-		// 		for(j=0; j<win2d; j++) psi_a[j] = NULL;
-		// 	}
-		// 	else if(psi_b1[i]!=NULL) {
-		// 		for(j=0; j<win2d; j++) psi_b1[j] = NULL;
-		// 	}
-		// 	else if(psi_b12[i]!=NULL) {
-		// 		for(j=0; j<win2d; j++) psi_b12[j] = NULL;
-		// 	}
-		// }
-		// cjfeng 04/05/2016
-		// The original code.
 		for(i=0; i<3; i++) {
 			if((!error) && (!no2d) ) {
 				psi_a[i] = (GNCOMP**) malloc(win2d*sizeof(GNCOMP*));
@@ -1640,12 +1482,6 @@ int allocate_all( int window, int win2d, int winzpad, int nosc, int nread, int n
 		U1Qs = NULL;
 		for(i=0; i<3; i++) cDip1Q[i] = NULL;
 		U1QMat = NULL;
-		// cjfeng 04/05/2016
-		// Modified code due to changing the allocation of arrays
-		// psi_a = NULL;
-		// psi_b1 = NULL;
-		// psi_b12 = NULL;
-		// The original code
 		for(i=0; i<3; i++) {
 			psi_a[i] = NULL;
 			psi_b1[i] = NULL;
@@ -1939,19 +1775,6 @@ int graceful_exit( int error, int nread, int nbuffer, int win2d, int nthreads, i
 	if(FTin2D!=NULL) fftw_free(FTin2D);
 	if(FTout2D!=NULL) fftw_free(FTout2D);
 	if(FTplan2D!=NULL) fftw_destroy_plan(FTplan2D);
-	// cjfeng 04/05/2016
-	// Modified code due to changing the allocation of arrays.
-	// if(psi_a!=NULL) for(j=0; j<win2d; j++) if(psi_a[j]!=NULL) for(i=0; i<3; i++) if(psi_a[j][i]!=NULL) free(psi_a[j][i]);
-	// if(psi_b1!=NULL) for(j=0; j<win2d; j++) if(psi_b1[j]!=NULL) for(i=0; i<3; i++) if(psi_b1[j][i]!=NULL) free(psi_b1[j][i]);
-	// if(psi_b12!=NULL) for(j=0; j<win2d; j++) if(psi_b12[j]!=NULL) for(i=0; i<3; i++) if(psi_b12[j][i]!=NULL) free(psi_b12[j][i]);
-	// if(psi_a!=NULL) for(j=0; j<win2d; j++) if(psi_a[j]!=NULL) free(psi_a[j]);
-	// if(psi_b1!=NULL) for(j=0; j<win2d; j++) if(psi_b1[j]!=NULL) free(psi_b1[j]);
-	// if(psi_b12!=NULL) for(j=0; j<win2d; j++) if(psi_b12[j]!=NULL) free(psi_b12[j]);
-	// if(psi_a!=NULL) free(psi_a);
-	// if(psi_b1!=NULL) free(psi_b1);
-	// if(psi_b12!=NULL) free(psi_b12);
-	// cjfeng 04/05/2016
-	// The original line
 	for(i=0; i<3; i++) if(psi_a[i]!=NULL) for(j=0; j<win2d; j++) if(psi_a[i][j]!=NULL) free(psi_a[i][j]);
 	for(i=0; i<3; i++) if(psi_b1[i]!=NULL) for(j=0; j<win2d; j++) if(psi_b1[i][j]!=NULL) free(psi_b1[i][j]);
 	for(i=0; i<3; i++) if(psi_b12[i]!=NULL) for(j=0; j<win2d; j++) if(psi_b12[i][j]!=NULL) free(psi_b12[i][j]);
@@ -2005,7 +1828,7 @@ int graceful_exit( int error, int nread, int nbuffer, int win2d, int nthreads, i
 	// The modified code due to changing the allocation of Dip2QMat
 	if(Dip2QMat!=NULL) for(j=0; j<nbuffer; j++) if(Dip2QMat[j]!=NULL) for(i=0; i<3; i++) if(Dip2QMat[j][i]!=NULL) free(Dip2QMat[j][i]);
 	if(Dip2QMat!=NULL) for(j=0; j<nbuffer; j++) if(Dip2QMat[j]!=NULL) free(Dip2QMat[j]);
-	if(Dip2QMat!=NULL) free(Dip2QMat[i]);
+	if(Dip2QMat!=NULL) free(Dip2QMat);
 	// cjfeng 04/05/2016
 	// The original lines
 	// for(i=0; i<3; i++) if(Dip2QMat[i]!=NULL) for(j=0; j<nbuffer; j++) if(Dip2QMat[i][j]!=NULL) free(Dip2QMat[i][j]);
@@ -2161,7 +1984,7 @@ int main ( int argc, char * argv[] ) {
 	const char *desc[] = {""};
 
 	// A description of known bugs
-	const char *bugs[] = {""};
+	const char *bugs[] = {"Varying tstep would change the amplitude or even the sign of the excited state absorption part. (i.e. pathways involving two-quantum parts)."};
 
 #define NFILE asize(fnm)
 
@@ -2539,11 +2362,6 @@ int main ( int argc, char * argv[] ) {
 		}
 		fr = -1;
 		frame = readframe-nread;
-		// cjfeng 03/22/2016
-		// Temporary matrix transpose declaration,
-		// used for further matrix-matrix multiplication.
-		// GNCOMP *U1Q_t;
-		// U1Q_t= (GNCOMP*) malloc(nosc*nosc*sizeof(GNCOMP));
 		// Now do calculations for selected frames. 
 		while( (fr!=-2) && (!error) ) {
 			// Step through all recently read frames to see whether frame
@@ -2586,10 +2404,6 @@ int main ( int argc, char * argv[] ) {
 				for(n=0; n<window; n++) {
 					xfr = (fr+n)%nbuffer;
 					cval = 0.0;
-					// cjfeng 04/06/2016
-					// Number of threads available is set
-					// outside the loop during solving 
-					// eigenvalue problems
 					// if(nthreads>1) {
 					// 	omp_set_num_threads(nthreads);
 					// }
@@ -2612,20 +2426,11 @@ int main ( int argc, char * argv[] ) {
 					}
 					CorrFunc[n] += cval;
 					// cjfeng 04/06/2016
-					// U1Qs is not used anymore.
-					// Planning to remove it or rename it as U1Q_t
-					//
-					// Now copy the current (cumulative) propagator in U1Q to U1Qs
-					// for(i=0; i<nosc; i++) for(j=0; j<nosc; j++) U1Qs[i*nosc+j] = U1Q[i*nosc+j];
+					// U1Qs is transposed
 
 					// And multiply by U1QMat[xfr] to extend propagation by one frame. The result goes in U1Q.
 					// mmult_comp(U1QMat[xfr], U1Qs, U1Q, nosc, nthreads);
 
-					// cjfeng 03/24/2016
-					// Transpose U1Q to speedup later propagation
-					// cjfeng 03/27/2016
-					// Block version added, but it would be
-					// nice to remove the if condition.
 					trans_comp(U1Q,U1Qs,nosc,nosc,nthreads);
 					if(nosc>=NBCOMP) {
 						mmult_comp_block(U1QMat[xfr], U1Qs, U1Q, nosc, nthreads);
@@ -2654,70 +2459,29 @@ int main ( int argc, char * argv[] ) {
 					xfr0 = fr%nbuffer;
 
 					// Initialize first frame of psi_a[i] array to be simply Dip1Qmat[i][0]
-					//
-					// cjfeng 04/05/2016
-					// Swapping the order due to changing the allocation of Dip2QMat.
-					// for(i=0; i<3; i++) for(j=0; j<nosc; j++) psi_a[0][i][j] = Dip1QMat[i][fr%nbuffer][j];
-					// cjfeng 04/05/2016 
-					// The original lines
 					for(i=0; i<3; i++) for(j=0; j<nosc; j++) psi_a[i][0][j] = Dip1QMat[i][fr%nbuffer][j];
 					
 					// cjfeng 04/06/2016
 					// Block version added but now the condition is moved outside the nested loop.
-					if(nosc>=NBCOMP) {
-						for(i=0; i<3; i++) {
-							for(tau=0; tau<win2d-1; tau++) {
-							// Fill in psi_a array. 
-								// Fill in psi_a array. 
-								// 
-								// cjfeng 04/05/2016
-								// Swapped the order due to changing of the allocation of psi_a.
-								// psi_a[tau+1][i] = U1QMat[(fr+tau)%nbuffer]*psi_a[tau][i];
-								//
-								// mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_a[tau][i], psi_a[tau+1][i], nosc, nosc, nthreads);
-								//
-								// The original:
-								// psi_a[i][tau+1] = U1QMat[(fr+tau)%nbuffer]*psi_a[i][tau];
-								mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_a[i][tau], psi_a[i][tau+1], nosc, nosc, nthreads);
-							}
-						}
-					}
-					else {
+					// Block version removed since race condition can occur. It is to be fixed.
+					// if(nosc>=NBCOMP) {
+					// 	for(i=0; i<3; i++) {
+					// 		for(tau=0; tau<win2d-1; tau++) {
+					// 			// Fill in psi_a array. 
+					// 			// psi_a[i][tau+1] = U1QMat[(fr+tau)%nbuffer]*psi_a[i][tau];
+					//  			mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_a[i][tau], psi_a[i][tau+1], nosc, nosc, nthreads);
+					// 		}
+					// 	}
+					// }
+					// else {
 						for(i=0; i<3; i++) {
 							for(tau=0; tau<win2d-1; tau++) {
 								// Fill in psi_a array. 
-								//
-								// cjfeng 04/05/2016
-								// Swapped the order due to changing of the allocation of psi_a.
-								// psi_a[tau+1][i] = U1QMat[(fr+tau)%nbuffer]*psi_a[tau][i];
-								// mvmult_comp(U1QMat[(fr+tau)%nbuffer], psi_a[tau][i], psi_a[tau+1][i], nosc, nthreads);
-								//
-								// The original:
 								// psi_a[i][tau+1] = U1QMat[(fr+tau)%nbuffer]*psi_a[i][tau];
 								mvmult_comp(U1QMat[(fr+tau)%nbuffer], psi_a[i][tau], psi_a[i][tau+1], nosc, nthreads);
 							}
 						}
 						
-					}
-					// cjfeng 04/05/2016
-					// The original code 04/05/2016
-					// for(tau=0; tau<win2d-1; tau++) {
-					// 	for(i=0; i<3; i++) {
-					// 		// Removing unnecessary j loop here 03/21/2016 cjfeng
-					// 		// Including block optimization 03/27/2016 cjfeng
-					// 		if(nosc>=NBCOMP) {
-					// 			// It is possible to make the matrix-vector multiplication into matrix-matrix multiplication
-					// 			// which requires interchanging the array order.
-					// 			// 04/05/2016 cjfeng
-					// 			mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_a[i][tau], psi_a[i][tau+1], nosc, nosc, nthreads);
-					// 		}
-					// 		else {
-					// 			// It is possible to make the matrix-vector multiplication into matrix-matrix multiplication
-					// 			// which requires interchanging the array order.
-					// 			// 04/05/2016 cjfeng
-					// 			mvmult_comp(U1QMat[(fr+tau)%nbuffer], psi_a[i][tau], psi_a[i][tau+1], nosc, nthreads);
-					// 		}
-					// 	}
 					// }
 
 					// cjfeng 04/05/2016
@@ -2725,68 +2489,30 @@ int main ( int argc, char * argv[] ) {
 					for(tau1=0; tau1<window; tau1++) {
 
 						// cjfeng 04/05/2016
-						// Swapped the order due to changing the allocation of Dip2QMat.
-						// Initialize psi_b[tau1][i].
-						// for(i=0; i<3; i++) for(j=0; j<nosc; j++) psi_b1[tau1][i][j] = Dip1QMat[i][(fr+tau1)%nbuffer][j];
-						// cjfeng 04/05/2016
-						// The original code
 						// Initialize psi_b[i][tau1].
 						for(i=0; i<3; i++) for(j=0; j<nosc; j++) psi_b1[i][tau1][j] = Dip1QMat[i][(fr+tau1)%nbuffer][j];
 
 						// Fill in psi_b1 array
-						//
-						// cjfeng 04/05/2016
-						// Swapped the order due to changing the allocation of psi_b1.
-						// psi_b1[tau+1][i] = U1QMat[(fr+tau)%nbuffer]*psi_b1[tau][i];
-						//
-						// The original line
 						// psi_b1[i][tau+1] = U1QMat[(fr+tau)%nbuffer]*psi_b1[i][tau];
 						
 						// cjfeng 04/06/2016
 						// Block version added, and moved the if condition outside the nested loop.
-						if(nosc>=NBCOMP) {
-							for(i=0; i<3; i++) {
-								for(tau=tau1; tau<tau1+tau2+window-1; tau++) {
-									// mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_b1[tau][i], psi_b1[tau+1][i], nosc, nosc, nthreads);
-									mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_b1[i][tau], psi_b1[i][tau+1], nosc, nosc, nthreads);
-								}
-							}
-						}
-						else {
+						// if(nosc>=NBCOMP) {
+						// 	for(i=0; i<3; i++) {
+						// 		for(tau=tau1; tau<tau1+tau2+window-1; tau++) {
+						// 			mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_b1[i][tau], psi_b1[i][tau+1], nosc, nosc, nthreads);
+						// 		}
+						// 	}
+						// }
+						// else {
 							for(i=0; i<3; i++) {
 								for(tau=tau1; tau<tau1+tau2+window-1; tau++) {
 									mvmult_comp(U1QMat[(fr+tau)%nbuffer], psi_b1[i][tau], psi_b1[i][tau+1], nosc, nthreads);
 								}
 							}
-						}
-						// cjfeng 04/06/2016
-						// The original code
-						// for(tau=tau1; tau<tau1+tau2+window-1; tau++) {
-						// 	for(i=0; i<3; i++) {
-						// 		// Including block optimization 03/27/2016 cjfeng
-						// 		if(nosc>=NBCOMP) {
-						// 			// It is possible to make the matrix-vector multiplication into matrix-matrix multiplication
-						// 			// which requires interchanging the array order.
-						// 			// 04/05/2016 cjfeng
-						// 			mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_b1[i][tau], psi_b1[i][tau+1], nosc, nosc, nthreads);
-						// 		}
-						// 		else {
-						// 			// It is possible to make the matrix-vector multiplication into matrix-matrix multiplication
-						// 			// which requires interchanging the array order.
-						// 			// 04/05/2016 cjfeng
-						// 			mvmult_comp(U1QMat[(fr+tau)%nbuffer], psi_b1[i][tau], psi_b1[i][tau+1], nosc, nthreads);
-						// 		}
-						// 	}
 						// }
 
-						// cjfeng 04/05/2016
-						// Changed the order due to swapping the allocation of psi_b12
-						// Initialize psi_b12[i][tau1].
-						// for(i=0; i<3; i++) for(j=0; j<nosc; j++) psi_b12[tau1+tau2][i][j] = Dip1QMat[i][(fr+tau1+tau2)%nbuffer][j];
-						// cjfeng 04/05/2016
-						// The original code
-						// Initialize psi_b12[i][tau1].
-						// for(i=0; i<3; i++) for(j=0; j<nosc; j++) psi_b12[i][tau1+tau2][j] = Dip1QMat[i][(fr+tau1)%nbuffer][j];
+						// Initialize psi_b12[i][tau1+tau2].
 						for(i=0; i<3; i++) for(j=0; j<nosc; j++) psi_b12[i][tau1+tau2][j] = Dip1QMat[i][(fr+tau1+tau2)%nbuffer][j];
 
 						// Fill in psi_b12 array
@@ -2794,41 +2520,21 @@ int main ( int argc, char * argv[] ) {
 						// cjfeng 04/06/2016
 						// Block version added. and move the if condition
 						// outside the nested loop.
-						//
-						// cjfeng 04/05/2016
-						// Swapped the order due to changing the allocation of psi_b12
-						// psi_b12[tau+1][i] = U1QMat[(fr+tau)%nbuffer]*psi_b12[tau][i];
-						// 
-						// The original line
 						// psi_b12[i][tau+1] = U1QMat[(fr+tau)%nbuffer]*psi_b12[i][tau];
-						if(nosc>=NBCOMP) {
+						// if(nosc>=NBCOMP) {
+						// 	for(i=0; i<3; i++) {
+						// 		for(tau=tau1+tau2; tau<tau1+tau2+window-1; tau++) {
+						// 			mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_b12[i][tau], psi_b12[i][tau+1], nosc ,nosc, nthreads);
+						// 		}
+						// 	}
+						// }
+						// else {
 							for(i=0; i<3; i++) {
 								for(tau=tau1+tau2; tau<tau1+tau2+window-1; tau++) {
-									// mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_b12[tau][i], psi_b12[tau+1][i], nosc ,nosc, nthreads);
-									mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_b12[i][tau], psi_b12[i][tau+1], nosc ,nosc, nthreads);
-								}
-							}
-						}
-						else {
-							for(i=0; i<3; i++) {
-								for(tau=tau1+tau2; tau<tau1+tau2+window-1; tau++) {
-									// mvmult_comp(U1QMat[(fr+tau)%nbuffer], psi_b12[tau][i], psi_b12[tau+1][i], nosc, nthreads);
 									mvmult_comp(U1QMat[(fr+tau)%nbuffer], psi_b12[i][tau], psi_b12[i][tau+1], nosc, nthreads);
 								}
 							}
 
-						}
-						// cjfeng 04/05/2016
-						// The original code
-						// for(tau=tau1+tau2; tau<tau1+tau2+window-1; tau++) {
-						// 	for(i=0; i<3; i++) {
-						// 		if(nosc>=NBCOMP) {
-						// 			mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_b12[i][tau], psi_b12[i][tau+1], nosc, nosc, nthreads);
-						// 		}
-						// 		else {
-						// 			mvmult_comp(U1QMat[(fr+tau)%nbuffer], psi_b12[i][tau], psi_b12[i][tau+1], nosc, nthreads);
-						// 		}
-						// 	}	
 						// }
 
 						// Initialize the 2Q wavefunctions. 
@@ -2839,54 +2545,25 @@ int main ( int argc, char * argv[] ) {
 						// The Dip2QMat has changed into nbuffer*3*n2Q*nosc array.
 						// Block version added, and moved the if condition outside
 						// the nested loop.
-						if(n2Q>=NBREAL) {
+						// cjfeng 04/22/2016
+						// Block version removed since race condition can occur.
+						// It is to be fixed.
+						// if(n2Q>=NBREAL) {
+						//	for(i=0; i<3; i++) {
+						//		for(j=0; j<3; j++) {
+						//			mvmult_mix_block(Dip2QMat[tau1+tau2][j], psi_a[i][tau1+tau2], psi_ca[i*3+j], nosc, n2Q, nthreads);
+						//			mvmult_mix_block(Dip2QMat[tau1+tau2][j], psi_b1[i][tau1+tau2], psi_cb[i*3+j], nosc, n2Q, nthreads);
+						//		}
+						//	}
+						//}
+						//else {
 							for(i=0; i<3; i++) {
 								for(j=0; j<3; j++) {
-									// mvmult_mix_block(Dip2QMat[tau1+tau2][j], psi_a[tau1+tau2][i], psi_ca[i*3+j], nosc, n2Q, nthreads);
-									// mvmult_mix_block(Dip2QMat[tau1+tau2][j], psi_b1[tau1+tau2][i], psi_cb[i*3+j], nosc, n2Q, nthreads);
-									mvmult_mix_block(Dip2QMat[tau1+tau2][j], psi_a[i][tau1+tau2], psi_ca[i*3+j], nosc, n2Q, nthreads);
-									mvmult_mix_block(Dip2QMat[tau1+tau2][j], psi_b1[i][tau1+tau2], psi_cb[i*3+j], nosc, n2Q, nthreads);
-								}
-							}
-						}
-						else {
-							for(i=0; i<3; i++) {
-								for(j=0; j<3; j++) {
-									// mvmult_comp_trans_x(Dip2QMat[tau1+tau2][j], psi_a[tau1+tau2][i], psi_ca[i*3+j], nosc, n2Q, nthreads);
-									// mvmult_comp_trans_x(Dip2QMat[tau1+tau2][j], psi_b1[tau1+tau2][i], psi_cb[i*3+j], nosc, n2Q, nthreads);
 									mvmult_comp_trans_x(Dip2QMat[tau1+tau2][j], psi_a[i][tau1+tau2], psi_ca[i*3+j], nosc, n2Q, nthreads);
 									mvmult_comp_trans_x(Dip2QMat[tau1+tau2][j], psi_b1[i][tau1+tau2], psi_cb[i*3+j], nosc, n2Q, nthreads);
 								}
 							}
 
-						}
-
-						// cjfeng 04/05/2016
-						// The original code
-						// for(i=0; i<3; i++) {
-						// 	for(j=0; j<3; j++) {
-						// 		// Using matrix transpose to speedup calculations.
-						// 		// 03/24/2016 cjfeng
-						// 		// 
-						// 		// Change the order of Dip2QMat. 04/05/2016 cjfeng	
-						// 		// trans_real(Dip2QMat[j][tau1+tau2],Dip2QMat_t,nosc,n2Q,nthreads);
-						// 		//
-						// 		// Use block optimization to maintain speedup at large n2Q.
-						// 		// 03/27/2016 cjfeng
-						// 		if(n2Q>=NBREAL) {
-						// 			mvmult_mix_block(Dip2QMat[j][tau1+tau2], psi_a[i][tau1+tau2], psi_ca[i*3+j], nosc, n2Q, nthreads);
-						// 			mvmult_mix_block(Dip2QMat[j][tau1+tau2], psi_b1[i][tau1+tau2], psi_cb[i*3+j], nosc, n2Q, nthreads);
-						// 		}
-						// 		else {
-						// 			// It is possible to make the matrix-vector multiplication into matrix-matrix multiplication
-						// 			// which requires interchanging the array order.
-						// 			// 04/05/2016 cjfeng
-						// 			mvmult_comp_trans_x(Dip2QMat[j][tau1+tau2], psi_a[i][tau1+tau2], psi_ca[i*3+j], nosc, n2Q, nthreads);
-						// 			mvmult_comp_trans_x(Dip2QMat[j][tau1+tau2], psi_b1[i][tau1+tau2], psi_cb[i*3+j], nosc, n2Q, nthreads);
-						// 		}
-						// 		// mvmult_comp_x(Dip2QMat[j][tau1+tau2], psi_a[i][tau1+tau2], psi_ca[i*3+j], nosc, n2Q, nthreads);
-						// 		// mvmult_comp_x(Dip2QMat[j][tau1+tau2], psi_b1[i][tau1+tau2], psi_cb[i*3+j], nosc, n2Q, nthreads);
-						// 	}
 						// }
 
 						for(tau3=0; tau3<window; tau3++) {
@@ -2901,23 +2578,26 @@ int main ( int argc, char * argv[] ) {
 
 									// cjfeng 03/27/2016
 									// Including block optimization
-									if(n2Q>=NBCOMP) {
-										mvmult_comp_block(U2Qs, psi2Q, psi_ca[i], n2Q, n2Q, nthreads);
-									}
-									else {
+									// cjfeng 04/22/2016
+									// Block optmization removed because of race condition
+									// if(n2Q>=NBCOMP) {
+									// 	mvmult_comp_block(U2Qs, psi2Q, psi_ca[i], n2Q, n2Q, nthreads);
+									// }
+									// else {
 										mvmult_comp(U2Qs, psi2Q, psi_ca[i], n2Q, nthreads);
-									}
+									// }
 
 									for(j=0; j<n2Q; j++) psi2Q[j] = psi_cb[i][j];
 
 									// cjfeng 03/27/2016
 									// Including block optimization
-									if(n2Q>=NBCOMP) {
-										mvmult_comp_block(U2Qs, psi2Q, psi_cb[i], n2Q, n2Q, nthreads);
-									} 
-									else {
+									// Block optimization removed because of race condition
+									// if(n2Q>=NBCOMP) {
+									// 	mvmult_comp_block(U2Qs, psi2Q, psi_cb[i], n2Q, n2Q, nthreads);
+									// } 
+									// else {
 										mvmult_comp(U2Qs, psi2Q, psi_cb[i], n2Q, nthreads);
-									}
+									// }
 								}
 							} else {
 								for(i=0; i<9; i++) {
@@ -2925,22 +2605,26 @@ int main ( int argc, char * argv[] ) {
 
 									// cjfeng 03/27/2016
 									// Including block optimization
-									if(n2Q>=NBCOMP) {
-										mvmult_comp_block(U2QMat[(fr+tau1+tau2+tau3)%nbuffer], psi2Q, psi_ca[i], n2Q, n2Q, nthreads);
-									}
-									else {
+									// cjfeng 04/20/2016
+									// Block optimization removed because of race condition
+									// if(n2Q>=NBCOMP) {
+									// 	mvmult_comp_block(U2QMat[(fr+tau1+tau2+tau3)%nbuffer], psi2Q, psi_ca[i], n2Q, n2Q, nthreads);
+									// }
+									// else {
 									     mvmult_comp(U2QMat[(fr+tau1+tau2+tau3)%nbuffer], psi2Q, psi_ca[i], n2Q, nthreads);
-									}
+									// }
 
 									for(j=0; j<n2Q; j++) psi2Q[j] = psi_cb[i][j];
 									// cjfeng 03/27/2016
 									// Including block optimization
-									if(n2Q>=NBCOMP) {
-										mvmult_comp_block(U2QMat[(fr+tau1+tau2+tau3)%nbuffer], psi2Q, psi_cb[i], n2Q, n2Q, nthreads);
-									}
-									else {
+									// cjfeng 04/20/2016
+									// Block optimization removed because of race condition
+									// if(n2Q>=NBCOMP) {
+									// 	mvmult_comp_block(U2QMat[(fr+tau1+tau2+tau3)%nbuffer], psi2Q, psi_cb[i], n2Q, n2Q, nthreads);
+									// }
+									// else {
 										mvmult_comp(U2QMat[(fr+tau1+tau2+tau3)%nbuffer], psi2Q, psi_cb[i], n2Q, nthreads);
-									}
+									// }
 								}	
 							}
 							GNREAL popfac1Q = popdecay1Q[tau1+2*tau2+tau3];
@@ -2950,6 +2634,12 @@ int main ( int argc, char * argv[] ) {
 							int P,p,l;
 							for(P=0; P<npol; P++) {
 								int a, b;
+								// cjfeng 04/27/2016
+								// Adding local variable to reduce memory access
+								GNCOMP REPH_private;
+								GNCOMP NREPH_private;
+								REPH_private = 0.0;
+								NREPH_private = 0.0;
 								for(a=0; a<3; a++) {
 									for(b=0; b<3; b++) {
 										// p sums over the forms iiii, iijj, ijji, and ijij
@@ -2974,15 +2664,10 @@ int main ( int argc, char * argv[] ) {
 
 												cval1 = 0.0; cval2 = 0.0;
 												
-												// cjfeng 04/05/2016
-												// Swapped the order of psi_b12 and psi_a arrays
-												// for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][(fr+tau1+tau2+tau3)%nbuffer][n]*psi_b12[tau1+tau2+tau3][k][n];
-												// for(n=0; n<nosc; n++) cval2 += Dip1QMat[j][(fr+tau1)%nbuffer][n]*psi_a[tau1][i][n];
-												// cjfeng 04/05/2016
-												// The original lines
 												for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][(fr+tau1+tau2+tau3)%nbuffer][n]*psi_b12[k][tau1+tau2+tau3][n];
 												for(n=0; n<nosc; n++) cval2 += Dip1QMat[j][(fr+tau1)%nbuffer][n]*psi_a[i][tau1][n];
-												REPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
+												REPH_private += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
+												// REPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
 
 												// Second rephasing pathway:
 												//
@@ -2994,15 +2679,10 @@ int main ( int argc, char * argv[] ) {
 												// The contribution to the rephasing spectrum is the orientionally averaged value
 												// 	( Dip1Q[tau3+tau2+tau1]*psi_b1[tau1+tau2+tau3] ) * conj( Dip1Q[tau2+tau1]*psi_a[tau2+tau1] )
 												cval1 = 0.0; cval2 = 0.0;
-												// cjfeng 04/05/2016
-												// Swapped the order of psi_b1 and ps_a arrays 
-												// for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][(fr+tau1+tau2+tau3)%nbuffer][n]*psi_b1[tau1+tau2+tau3][j][n];
-												// for(n=0; n<nosc; n++) cval2 += Dip1QMat[k][(fr+tau1+tau2)%nbuffer][n]*psi_a[tau1+tau2][i][n];
-												// cjfeng 04/05/2016
-												// The original lines
 												for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][(fr+tau1+tau2+tau3)%nbuffer][n]*psi_b1[j][tau1+tau2+tau3][n];
 												for(n=0; n<nosc; n++) cval2 += Dip1QMat[k][(fr+tau1+tau2)%nbuffer][n]*psi_a[i][tau1+tau2][n];
-												REPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
+												REPH_private += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
+												// REPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
 
 												// Final rephasing pathway:
 												//
@@ -3021,24 +2701,13 @@ int main ( int argc, char * argv[] ) {
 												// cjfeng 03/27/2016
 												// Use block optimization to maintain speedup at large n2Q.
 												//
-												if(n2Q>NBREAL) {
-													// mvmult_mix_block(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_a[tau1+tau2+tau3][i], psi2Q, nosc, n2Q, nthreads);
-													mvmult_mix_block(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_a[i][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
-												}
-												else {
-													//mvmult_comp_trans_x(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_a[tau1+tau2+tau3][i], psi2Q, nosc, n2Q, nthreads);
-													mvmult_comp_trans_x(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_a[i][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
-												}
-												
-												// cjfeng 04/05/2016
-												// The original code
-												// if(n2Q>=NBREAL) {
-												//  	mvmult_mix_block(Dip2QMat[l][(fr+tau3+tau2+tau1)%nbuffer], psi_a[i][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
+												// if(n2Q>NBREAL) {
+												//	mvmult_mix_block(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_a[i][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
 												// }
 												// else {
-												// 	mvmult_comp_trans_x(Dip2QMat[l][(fr+tau3+tau2+tau1)%nbuffer], psi_a[i][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
+													mvmult_comp_trans_x(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_a[i][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
 												// }
-												// mvmult_comp_x(Dip2QMat[l][(fr+tau3+tau2+tau1)%nbuffer], psi_a[i][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
+												
 												cval1 = 0.0; 
 												for(n=0; n<n2Q; n++) cval1 += psi_cb[j*3+k][n]*conj(psi2Q[n]);
 												REPH[POL[P]][tau1*window+tau3] -= M_ijkl_IJKL[P][p]*cval1*popfac2Q;
@@ -3053,15 +2722,10 @@ int main ( int argc, char * argv[] ) {
 												// The contribution to the non-rephasing spectrum is the orientationally averaged value
 												// 	( Dip1Q[tau1+tau2+tau3]*psi_b12[tau1+tau2+tau3] ) * ( Dip1Q[tau1]*psi_a[tau1] ) 
 												cval1 = 0.0; cval2 = 0.0;
-												// cjfeng 04/05/2016
-												// Swapped the order of psi_b1 and psi_a arrays.
-												// for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][(fr+tau1+tau2+tau3)%nbuffer][n]*psi_b12[tau1+tau2+tau3][k][n];
-												// for(n=0; n<nosc; n++) cval2 += Dip1QMat[j][(fr+tau1)%nbuffer][n]*psi_a[tau1][i][n];
-												// cjfeng 04/05/2016
-												// The original code 
 												for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][(fr+tau1+tau2+tau3)%nbuffer][n]*psi_b12[k][tau1+tau2+tau3][n];
 												for(n=0; n<nosc; n++) cval2 += Dip1QMat[j][(fr+tau1)%nbuffer][n]*psi_a[i][tau1][n];
-												NREPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*cval2*popfac1Q;
+												NREPH_private += M_ijkl_IJKL[P][p]*cval1*cval2*popfac1Q;
+												// NREPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*cval2*popfac1Q;
 
 												// Second non-rephasing pathway:
 												// 	| a 0 |
@@ -3072,15 +2736,10 @@ int main ( int argc, char * argv[] ) {
 												// The contribution to the non-rephasing spectrum is the orientionally averaged value
 												// 	( Dip1Q[tau1+tau2+tau3]*psi_a[tau1+tau2+tau3] ) * conj( Dip1Q[tau1+tau2]*psi_b1[tau1+tau2] )
 												cval1 = 0.0; cval2 = 0.0;
-												// cjfeng 04/05/2016
-												// Swapped the order of psi_a and psi_b1 arrays.
-												// for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][(fr+tau1+tau2+tau3)%nbuffer][n]*psi_a[tau1+tau2+tau3][i][n];
-												// for(n=0; n<nosc; n++) cval2 += Dip1QMat[k][(fr+tau1+tau2)%nbuffer][n]*psi_b1[tau1+tau2][j][n];
-												// cjfeng 04/05/2016
-												// The original code
 												for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][(fr+tau1+tau2+tau3)%nbuffer][n]*psi_a[i][tau1+tau2+tau3][n];
 												for(n=0; n<nosc; n++) cval2 += Dip1QMat[k][(fr+tau1+tau2)%nbuffer][n]*psi_b1[j][tau1+tau2][n];
-												NREPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
+												NREPH_private += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
+												// NREPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
 
 												// Final non-rephasing pathway:
 												// 	| c b |
@@ -3096,35 +2755,26 @@ int main ( int argc, char * argv[] ) {
 												//
 												// cjfeng 03/27/2016
 												// Use block optimization to maintain speedup at large n2Q.
-												if(n2Q>=NBREAL) {
-													// mvmult_mix_block(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_b1[tau1+tau2+tau3][j], psi2Q, nosc, n2Q, nthreads);
-													mvmult_mix_block(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_b1[j][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
-												}
-												else {
-													// mvmult_comp_trans_x(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_b1[tau1+tau2+tau3][j], psi2Q, nosc, n2Q, nthreads);
-													mvmult_comp_trans_x(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_b1[j][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
-												}
-												
-												// cjfeng 04/05/2016
-												// The original code
 												// if(n2Q>=NBREAL) {
-												// 	// Change the order of Dip2QMat. 04/05/2016 cjfeng	
-												// 	mvmult_mix_block(Dip2QMat[l][(fr+tau3+tau2+tau1)%nbuffer], psi_b1[j][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
-												// 	// mvmult_mix_block(Dip2QMat_t, psi_b1[j][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
+												//	mvmult_mix_block(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_b1[j][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
 												// }
 												// else {
-												// 	// Change the order of Dip2QMat. 04/05/2016 cjfeng	
-												// 	mvmult_comp_trans_x(Dip2QMat[l][(fr+tau3+tau2+tau1)%nbuffer], psi_b1[j][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
-												// 	// mvmult_comp_trans_x(Dip2QMat_t, psi_b1[j][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
+													mvmult_comp_trans_x(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_b1[j][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
 												// }
-												// // mvmult_comp_x(Dip2QMat[l][(fr+tau3+tau2+tau1)%nbuffer], psi_b1[j][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
+
+												// Swapping i and k
+												// cjfeng 06/08/2016
 												cval1 = 0.0;
-												for(n=0; n<n2Q; n++) cval1 += psi_ca[k*3+i][n]*conj(psi2Q[n]);
-												NREPH[POL[P]][tau1*window+tau3] -= M_ijkl_IJKL[P][p]*cval1*popfac2Q;
+												for(n=0; n<n2Q; n++) cval1 += psi_ca[i*3+k][n]*conj(psi2Q[n]);
+												NREPH_private -= M_ijkl_IJKL[P][p]*cval1*popfac2Q;
+												// NREPH[POL[P]][tau1*window+tau3] -= M_ijkl_IJKL[P][p]*cval1*popfac2Q;
 											}
 										}
 									}
 								}
+								// cjfeng 04/27/2016
+								REPH[POL[P]][tau1*window+tau3] += REPH_private;
+								NREPH[POL[P]][tau1*window+tau3] += NREPH_private;
 							}
 						}
 					}
@@ -3235,9 +2885,6 @@ int main ( int argc, char * argv[] ) {
 				}
 			}
 		}
-		// cjfeng 04/05/2016
-		// Release the temporary matrix transpose
-		// free(U1Q_t);
 		fr = -1;
 		frame = readframe-nread;
 		// Now do calculations for selected frames. 
@@ -3470,8 +3117,8 @@ int main ( int argc, char * argv[] ) {
 					for(j=0; j<nprint; j++) {
 						ndx3 = (ndxstart+j)%winzpad;
 						cval = FTout2D[ndx1*winzpad+ndx3][0] + FTout2D[ndx1*winzpad+ndx3][1]*I;
-						if(cimag(cval)<0) fprintf(rfp[p], "%6.10f%6.10fi\t", creal(cval), cimag(cval));
-						else fprintf(rfp[p], "%6.10f+%6.10fi\t", creal(cval), cimag(cval));
+						if(cimag(cval)<0) fprintf(rfp[POL[p]], "%6.10f%6.10fi\t", creal(cval), cimag(cval));
+						else fprintf(rfp[POL[p]], "%6.10f+%6.10fi\t", creal(cval), cimag(cval));
 					}
 					fprintf(rfp[POL[p]], "\n");
 				}
@@ -3497,8 +3144,8 @@ int main ( int argc, char * argv[] ) {
 					for(j=0; j<nprint; j++) {
 						ndx3 = (ndxstart+j)%winzpad;
 						cval = FTout2D[ndx1*winzpad+ndx3][0] + FTout2D[ndx1*winzpad+ndx3][1]*I;
-						if(cimag(cval)<0) fprintf(nrfp[p], "%6.10f%6.10fi\t", creal(cval), cimag(cval));
-						else fprintf(nrfp[p], "%6.10f+%6.10fi\t", creal(cval), cimag(cval));
+						if(cimag(cval)<0) fprintf(nrfp[POL[p]], "%6.10f%6.10fi\t", creal(cval), cimag(cval));
+						else fprintf(nrfp[POL[p]], "%6.10f+%6.10fi\t", creal(cval), cimag(cval));
 					}
 					fprintf(nrfp[POL[p]], "\n");
 				}
