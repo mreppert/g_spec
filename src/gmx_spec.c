@@ -27,6 +27,9 @@
 	#include "omp.h"
 #endif
 
+// cjfeng 06/27/2016
+// Tracking memory usage of g_specc
+#include <sys/resource.h>
 
 // #define DOUBLE_PRECISION
 
@@ -36,6 +39,9 @@
 #define SYTRD LAPACKE_dsytrd
 #define ORGTR LAPACKE_dorgtr
 #define STEQR LAPACKE_dsteqr
+#define STEDC LAPACKE_dstedc
+#define STEGR LAPACKE_dstegr
+#define SYEVR LAPACKE_dsyevr
 #define NBREAL 900
 #define NBCOMP 650
 
@@ -45,6 +51,9 @@
 #define SYTRD LAPACKE_ssytrd
 #define ORGTR LAPACKE_sorgtr
 #define STEQR LAPACKE_ssteqr
+#define STEDC LAPACKE_sstedc
+#define STEGR LAPACKE_sstegr
+#define SYEVR LAPACKE_ssyevr
 #define NBREAL 1300
 #define NBCOMP 900
 #endif
@@ -147,7 +156,7 @@ int count_lines(char* fname) {
 	FILE* fp = fopen(fname, "r");
 	if(fp==NULL) {
 		printf("Error opening file %s: please check input", fname);
-	return -1;
+		return -1;
 	}
 	do {
 		temp = fgetc(fp);
@@ -156,7 +165,7 @@ int count_lines(char* fname) {
 	lines++;
 	c= (char *) malloc(2*length);		
 
-	while(fgets(c,2*length,fp) != NULL){
+	while(fgets(c, 2*length,fp) != NULL){
 		lines++;
 	}
 	fclose(fp);
@@ -490,16 +499,19 @@ int mvmult_real_serial_trans(GNREAL *A, GNREAL *vin, GNREAL *vout, int dim, int 
 	return 0;
 }
 
-// 03/27/2016 cjfeng
+// cjfeng 06/27/2016 cjfeng
 // Block optimizied version of matrix-vector multiplication
+// Putting omp into inner loop to avoid race condition.
 int mvmult_comp_block (GNCOMP *A, GNCOMP *vin, GNCOMP *vout, int dimin, int dimout, int nt) {
 	int i,j,ii,jj;
 	if(nt>1) {	// Parallel calculation
 		omp_set_num_threads(nt);
 		// for (ii=0; ii<dimout; ii+=NBCOMP) {
-		#pragma omp parallel shared(A, vin, vout, ii, jj) private(i, j) firstprivate(dimin, dimout)
-		#pragma omp for schedule(guided) nowait collapse(2)
+		// #pragma omp parallel shared(A, vin, vout, ii, jj) private(i, j) firstprivate(dimin, dimout)
+		// #pragma omp for schedule(guided) nowait collapse(2)
 			for (jj=0; jj<dimin; jj+=NBCOMP) {
+				#pragma omp parallel shared(A, vin, vout, ii, jj) private(i, j) firstprivate(dimin, dimout)
+				#pragma omp for schedule(guided) nowait 
 				for (i=0; i< dimout; i++) {
 				// for (i=0; i< min(ii+nb,dimout); i++) {
 					GNCOMP vout_private = 0.0 + 0.0i;
@@ -513,11 +525,11 @@ int mvmult_comp_block (GNCOMP *A, GNCOMP *vin, GNCOMP *vout, int dimin, int dimo
 	}
 	else {		// Serial calculation
 		// for (ii=0; ii<dimout; ii+=NBREAL) {
-			for (jj=0; jj<dimin; jj+=NBREAL) {
+			for (jj=0; jj<dimin; jj+=NBCOMP) {
 				for (i=0; i<dimout; i++) {
 				// for (i=ii; i< min(ii+NBREAL,dimout); i++) {
 					GNCOMP vout_private = 0.0 + 0.0i;
-					for (j=jj; j< min(jj+NBREAL, dimin); j++) {
+					for (j=jj; j< min(jj+NBCOMP, dimin); j++) {
 						vout_private += A[i*dimin+j] * vin[j];
 						// vout[i] += A[i*dimin+j] * vin[j];
 					}
@@ -699,7 +711,7 @@ int read_info( FILE *fp, char* Infoname, char*** p_NNames, int** p_NNums, char**
 	int nbonds = 0;
 	int error = 0; 
 	fp = fopen(Infoname, "r");
-	if(fp==NULL) return 0;
+	if(fp==NULL) return 0;	// No file is read.
 	else {
 		while( (!error) && (fgets(line, maxchar, fp)!=NULL)) {
 			if(strncmp(line, "BONDS:", 6)==0) {
@@ -766,7 +778,6 @@ int read_info( FILE *fp, char* Infoname, char*** p_NNames, int** p_NNums, char**
 	*p_CNums = CNums; 
 	return nbonds; 
 }
-
 
 int parse_shifts(char* Parname, int *p_nshift, int maxchar) {
 	FILE* fp = fopen(Parname, "r");
@@ -865,13 +876,32 @@ int gen_dip_2Q(GNREAL *Dip1Q, GNREAL *Dip2Q, int nosc, int n2Q) {
 GNREAL orient(GNREAL **Dip1[3], GNREAL **Dip2[3], int tid, int ndxA, int ndxB, int ndxC, int ndxD, int pol) {
 	real Val = 0.0;
 	int a,b;
+	// cjfeng 06/27/2016
+	// Improving locality.
+	GNREAL M0, M1, M2, M3;
+	M0 =  M_ijkl_IJKL[pol][0];
+	M1 =  M_ijkl_IJKL[pol][1];
+	M2 =  M_ijkl_IJKL[pol][2];
+	M3 =  M_ijkl_IJKL[pol][3];
 	for(a=0; a<3; a++) {
-		Val += M_ijkl_IJKL[pol][0]*Dip1[a][tid][ndxA]*Dip1[a][tid][ndxB]*Dip2[a][tid][ndxC]*Dip2[a][tid][ndxD];
+		GNREAL D1aA, D1aB, D1bB, D2aC, D2bC, D2aD, D2bD;
+		D1aA = Dip1[a][tid][ndxA];
+		D1aB = Dip1[a][tid][ndxB];
+		D2aC = Dip2[a][tid][ndxC];
+		D2aD = Dip2[a][tid][ndxD];
+		Val += M0*D1aA*D1aB*D2aC*D2aD;
+		// Val += M_ijkl_IJKL[pol][0]*Dip1[a][tid][ndxA]*Dip1[a][tid][ndxB]*Dip2[a][tid][ndxC]*Dip2[a][tid][ndxD];
 		for(b=0; b<3; b++) {
 			if(b!=a) {
-				Val += M_ijkl_IJKL[pol][1]*Dip1[a][tid][ndxA]*Dip1[a][tid][ndxB]*Dip2[b][tid][ndxC]*Dip2[b][tid][ndxD];
-				Val += M_ijkl_IJKL[pol][2]*Dip1[a][tid][ndxA]*Dip1[b][tid][ndxB]*Dip2[b][tid][ndxC]*Dip2[a][tid][ndxD];
-				Val += M_ijkl_IJKL[pol][3]*Dip1[a][tid][ndxA]*Dip1[b][tid][ndxB]*Dip2[a][tid][ndxC]*Dip2[b][tid][ndxD];
+				D1bB = Dip1[b][tid][ndxB];
+				D2bC = Dip2[b][tid][ndxC];
+				D2bD = Dip2[b][tid][ndxD];
+				Val += M1*D1aA*D1aB*D2bC*D2bD;
+				Val += M2*D1aA*D1bB*D2bC*D2aD;
+				Val += M3*D1aA*D1bB*D2aC*D2bD;
+				// Val += M_ijkl_IJKL[pol][1]*Dip1[a][tid][ndxA]*Dip1[a][tid][ndxB]*Dip2[b][tid][ndxC]*Dip2[b][tid][ndxD];
+				// Val += M_ijkl_IJKL[pol][2]*Dip1[a][tid][ndxA]*Dip1[b][tid][ndxB]*Dip2[b][tid][ndxC]*Dip2[a][tid][ndxD];
+				// Val += M_ijkl_IJKL[pol][3]*Dip1[a][tid][ndxA]*Dip1[b][tid][ndxB]*Dip2[a][tid][ndxC]*Dip2[b][tid][ndxD];
 			}
 		}
 	}
@@ -1080,16 +1110,18 @@ int calc_2dir_pert(GNREAL **Evals1QAr, GNREAL **Evals2QAr, GNREAL **ExDip1QAr[3]
 
 
 int make_fnames( char* Infoname, char* Hamname, char* hamnm, char Dipnames[3][maxchar], char* dipxnm, char* dipynm, char* dipznm, char* Sitesname, char* sitesnm, char* axisnm, char* ftirnm, char* lognm, char polnm[4][16], char rephnm[4][maxchar], char nrephnm[4][maxchar], char Trajnm[10][maxchar], char* Parname, char* paramnm, char* outname, char* deffnm, int do_traj ) {
-	int i;
+	int i;		// Index running over all possible polarizations.
 	if(outname!=NULL) {
 		printf("Output file name base: %s\n", outname);
-		strcpy(ftirnm, outname);
-		strcpy(lognm, outname);
-		strcpy(axisnm, outname);
-		for(i=0; i<4; i++) {
-			strcpy(rephnm[i], outname);
-			strcpy(nrephnm[i], outname);
+		strcpy(ftirnm, outname);				// Copying output name base to ftir filename.
+		strcpy(lognm, outname);					// Copying output name base to log filename.
+		strcpy(axisnm, outname);				// Copying output name base to frequency axis filename.
+		for(i=0; i<4; i++) {						// Running over polarizations
+			strcpy(rephnm[i], outname);		// Copying output name base to rephasing spectra filenames
+			strcpy(nrephnm[i], outname);	// Copying output name base to non-rephasing spectra filenames
 		}
+		// Adding "_" between output file name base and suffices 
+		// when name base is not referring to a folder.
 		if(outname[strlen(outname)-1]!='/') {
 			strcat(ftirnm, "_");
 			strcat(lognm, "_");
@@ -1098,9 +1130,9 @@ int make_fnames( char* Infoname, char* Hamname, char* hamnm, char Dipnames[3][ma
 				strcat(rephnm[i], "_");
 				strcat(nrephnm[i], "_");
 			}
-
 		}
-	} else {
+	} 
+	else {
 		ftirnm[0] = '\0';
 		lognm[0] = '\0';
 		axisnm[0] = '\0';
@@ -1109,50 +1141,54 @@ int make_fnames( char* Infoname, char* Hamname, char* hamnm, char Dipnames[3][ma
 			nrephnm[i][0] = '\0';
 		}
 	}
-	strcat(ftirnm, "ftir.txt");
-	strcat(lognm, "log.txt");
-	strcat(axisnm, "waxis.txt");
-	for(i=0; i<4; i++) {
-		strcat(rephnm[i], "reph_");
-		strcat(rephnm[i], polnm[i]);
-		strcat(nrephnm[i], "nreph_");
-		strcat(nrephnm[i], polnm[i]);
-	}
+	strcat(ftirnm, "ftir.txt");			// Adding suffix to ftir file
+	strcat(lognm, "log.txt");				// Adding suffix to log file
+	strcat(axisnm, "waxis.txt");		// Adding suffix to frequency axis file
 
+	for(i=0; i<4; i++) {
+		strcat(rephnm[i], "reph_");		// Adding suffix to rephasing spectra files
+		strcat(rephnm[i], polnm[i]);
+		strcat(nrephnm[i], "nreph_");	// Adding suffix to non-rephasing spectra file
+		strcat(nrephnm[i], polnm[i]);	
+	}
 
 	// Input file names
+	// First info file
 	if(deffnm!=NULL) {
-		strcpy(Infoname, deffnm);
-		if(deffnm[strlen(deffnm)-1]!='/') strcat(Infoname, "_");
-	} else {
-		Infoname[0] = '\0';
+		strcpy(Infoname, deffnm);			// Copying input file name base
+		if(deffnm[strlen(deffnm)-1]!='/') strcat(Infoname, "_"); // Adding "_" between deffnm and suffix.
 	}
-	strcat(Infoname, "info.txt");
+	else Infoname[0] = '\0';
+	strcat(Infoname, "info.txt");		// Adding suffix
 
+	// Hamiltonian file
 	if( (deffnm!=NULL) && (!strcmp(hamnm, "ham.txt")) ) {
 		printf("Made it inside\n");
 		strcpy(Hamname, deffnm);
 		if(deffnm[strlen(deffnm)-1]!='/') strcat(Hamname, "_");
 	} else Hamname[0] = '\0';
 	strcat(Hamname, hamnm);
-	
+
+	// Dipole moment files	
 	if( (deffnm!=NULL) && (!strcmp(dipxnm,"dipx.txt")) ) {
-                strcpy(Dipnames[0], deffnm);
-                if(deffnm[strlen(deffnm)-1]!='/') strcat(Dipnames[0], "_");
-        } else Dipnames[0][0] = '\0';
-        strcat(Dipnames[0], dipxnm);
+		strcpy(Dipnames[0], deffnm);
+		if(deffnm[strlen(deffnm)-1]!='/') strcat(Dipnames[0], "_");
+	}
+	else Dipnames[0][0] = '\0';
+  strcat(Dipnames[0], dipxnm);
+	
+	if( (deffnm!=NULL) && (!strcmp(dipynm,"dipy.txt")) ) {
+		strcpy(Dipnames[1], deffnm);
+		if(deffnm[strlen(deffnm)-1]!='/') strcat(Dipnames[1], "_");
+	}
+	else Dipnames[1][0] = '\0';
+	strcat(Dipnames[1], dipynm);
 
-        if( (deffnm!=NULL) && (!strcmp(dipynm,"dipy.txt")) ) {
-                strcpy(Dipnames[1], deffnm);
-                if(deffnm[strlen(deffnm)-1]!='/') strcat(Dipnames[1], "_");
-        } else Dipnames[1][0] = '\0';
-        strcat(Dipnames[1], dipynm);
-
-        if( (deffnm!=NULL) && (!strcmp(dipznm,"dipz.txt")) ) {
-                strcpy(Dipnames[2], deffnm);
-                if(deffnm[strlen(deffnm)-1]!='/') strcat(Dipnames[2], "_");
-        } else Dipnames[2][0] = '\0';
-        strcat(Dipnames[2], dipznm);
+  if( (deffnm!=NULL) && (!strcmp(dipznm,"dipz.txt")) ) {
+		strcpy(Dipnames[2], deffnm);
+		if(deffnm[strlen(deffnm)-1]!='/') strcat(Dipnames[2], "_");
+	} else Dipnames[2][0] = '\0';
+	strcat(Dipnames[2], dipznm);
 
 	// Sitename and Parname are unused if not specified
 	// The default file name is never appended.
@@ -1162,13 +1198,13 @@ int make_fnames( char* Infoname, char* Hamname, char* hamnm, char Dipnames[3][ma
 	Parname[0] = '\0';
 	strcat(Parname, paramnm);
 
+	// Specifying spectral trajectory file names if dumping frequency is greater than 0.
 	if(do_traj) {
 		if(outname!=NULL) {
 			strcpy(Trajnm[0], outname);
 			if(outname[strlen(outname)-1]!='/') strcat(Trajnm[0], "_");
-		} else {
-			Trajnm[0][0] = '\0';
-		}
+		} 
+		else Trajnm[0][0] = '\0';
 		strcat(Trajnm[0], "tstamp");
 		strncpy(Trajnm[1], ftirnm, strlen(ftirnm)-4);
 		for(i=2; i<6; i++) strncpy(Trajnm[i], rephnm[i-2], strlen(rephnm[i-2])-4);
@@ -1179,7 +1215,6 @@ int make_fnames( char* Infoname, char* Hamname, char* hamnm, char Dipnames[3][ma
 	}
 	return 0;
 }
-
 
 int open_all( char* Hamname, char Dipnames[3][maxchar], char* Sitesname, char* axisnm, char* ftirnm, char* lognm, int npol, int POL[4], char rephnm[4][maxchar], char nrephnm[4][maxchar], char Trajnames[10][maxchar], int no2d, int do_traj) {
 	int error=0;
@@ -1251,7 +1286,7 @@ int open_all( char* Hamname, char Dipnames[3][maxchar], char* Sitesname, char* a
 	return error;
 }
 
-int allocate_all( int window, int win2d, int winzpad, int nosc, int nread, int nbuffer, int nthreads, int n2Q, int pert, int no2d, GNREAL tstep, GNREAL TauP, int npts, int nise ) {
+int allocate_all( int window, int win2d, int winzpad, int nosc, int nbuffer, int nthreads, int n2Q, int pert, int no2d, GNREAL tstep, GNREAL TauP, int npts, int nise ) {
 	int error=0;
 	int i,j,k;
 	int npopdec = 2*(window+win2d-2*window);
@@ -1726,7 +1761,7 @@ int allocate_all( int window, int win2d, int winzpad, int nosc, int nread, int n
 }
 
 // Close files, free memory and exit gracefully
-int graceful_exit( int error, int nread, int nbuffer, int win2d, int nthreads, int npol, int nise, int nosc ) {
+int graceful_exit( int error, int nbuffer, int win2d, int nthreads, int npol, int nise, int nosc ) {
 	int i,j;
 	int stick;
 	if(nise) stick = 0;
@@ -1867,51 +1902,58 @@ routine, or store it in a separate copy.
 */
 
 int main ( int argc, char * argv[] ) {
-	double starttime, stoptime;
-	char* deffnm = NULL;
-	char* outname = NULL;
-	char* hamnm = "ham.txt";
-	char* dipxnm = "dipx.txt";
-	char* dipynm = "dipy.txt";
-	char* dipznm = "dipz.txt";
-	char* sitesnm = "";
-	char* paramnm = "";
-	int nise = 0;
-	int reph = 1;
-	int nreph = 1;
-	int zzzz = 1;
-	int zzyy = 1;
-	int zyyz = 0;
-	int zyzy = 0;
-	int do2d = 0;
-	int pert = 0;
-	int nthreads = 1;
-	int nread = 4*nthreads;
-	int tscan = 0; 
-	int window;
-	int win2d;
-	int winzpad;
-	int whann = 1;
-	int dump = -1;
-	int tstep = 0;
-	int T2 = 0;
-	int skip = 1;
-	real delta = 16.0;
-	int TauP = 1300;	// Amide I lifetime in fs
+	// Initial variable declaration and applying default settings.
+	double starttime, stoptime;		// Start and stop time during spectral simulation.
+	char* deffnm = NULL;					// Input file name base
+	char* outname = NULL;					// Output file name base
+	char* hamnm = "ham.txt";			// Hamiltonian file suffix
+	char* dipxnm = "dipx.txt";		// Dipole moment x-component file suffix
+	char* dipynm = "dipy.txt";		// Dipole moment y-component file suffix
+	char* dipznm = "dipz.txt";		// Dipole moment z-component file suffix
+	char* sitesnm = "";						// Site energy file
+	char* paramnm = "";						// Isotope shift file
+	int nise = 0;									// Static averaging by default (0)
+	int reph = 1;									// Calculate rephasing spectrum
+	int nreph = 1;								// Calculate non-rephasing spectrum
+	int zzzz = 1;									// ZZZZ polarization
+	int zzyy = 1;									// ZZYY polarization
+	int zyyz = 0;									// No ZYYZ polarization
+	int zyzy = 0;									// No ZYZY poloarization
+	int do2d = 0;									// No 2D IR spectral simulation.
+	int pert = 0;									// No first-order pertubative approximation on site energies
+	int nthreads = 1;							// Number of threads
+	int nread = 4*nthreads;				// nread for determining buffer length.
+	int tscan = 0; 								// Scan time for NISE or Averaging window time for TAA in fs
+	int window;										// Window size for TAA or linear NISE.
+	int win2d;										// Window size for 2D NISE.
+	int winzpad;									// Zero-padding length
+	int whann = 1;								// Hann window applied on the response in NISE time domain or averaged Hamiltonian in TAA.
+	int dump = -1;								// IR spectra dump time in ps
+	int tstep = 0;								// Trajectory time step in fs
+	int T2 = 0;										// Waiting time in fs, only valid in 2D NISE so far.
+	int skip = 1;									// Number of skips between reference frames.
+	real delta = 16.0;						// Anharmonicity in wavenumbers (Weak anharmonic approximation applied in the program.)
+	int TauP = 1300;							// Amide I lifetime in fs
 
-	int nosc = 0;
+	int nosc = 0;									// Number of oscillators
 
-	real wstart = 1500.0;
-	real wstop  = 1800.0;
-	real wres = 1;
-	real winterp = 1;
+	real wstart = 1500.0;					// Starting frequency of interest in wavenumber.
+	real wstop  = 1800.0;					// Ending frequency of interest in wavenumber.
+	real wres = 1;								// Frequency resolution in wavenumber.
+	real winterp = 1;							// Output frequency spacing in wavenumber, but for NISE, it determines 
+																// only zero-padding length, not the true resolution.
 
-	double c = 2.9979e-5;       // cm/fsec
-	double pi = 3.14159265;
+	double c = 2.9979e-5;					// Speed of light in cm/fsec
+	double pi = 3.14159265;				// The ration of a circle's circumference
 
-	int error = 0;
-	int nbuffer;
-	int npol;
+	int error = 0;								// integer indicating error information.
+	int nbuffer, nbuffer1d;				// nbuffer determines the size of Hamiltonian and dipole moment array sizes 
+																// while nbuffer1d is used only for FTIR correlation function scanning.
+	int npol;											// Number of polarizations to be simulated.
+
+	// cjfeng 06/27/2016
+	// Added usage to track memory usage.
+	struct rusage r_usage;				// resource usage, please refer to getrusage manual page.
 
 	// A list of command line file flags
 	t_filenm fnm[] = { };
@@ -1988,46 +2030,23 @@ int main ( int argc, char * argv[] ) {
 
 #define NFILE asize(fnm)
 
-        output_env_t oenv;
+	output_env_t oenv;
 
 	// parse_common_args() does exactly what it sounds like. The arg list is provided in the arrays t_filenm and t_pargs defined above. 
 	parse_common_args(&argc, argv, PCA_CAN_TIME | PCA_BE_NICE, NFILE, fnm, asize(pa), pa, asize(desc), desc, asize(bugs), bugs, &oenv);
 
-	int no2d = (!do2d);
+	int no2d = (!do2d);		// Flag for indicating not doing 2D IR simulation.
 
 	// Vector perturbation is slow.  Discontinue as of 1/31/2016
 	//if(pertvec) pert = 1;
 
-	nread = 4*nthreads;
-
-	if( (tstep<=0) && (tscan>0) ) {
-		printf("Please supply a (positive) trajectory time step in fsec (-tstep flag).\n");
-		graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc );
-		return 0;
-	} else if (tscan==0) tstep = 20;
-	if( (tscan<0) ) {
-		printf("Please supply a (non-negative) scan time step in fsec (-tscan flag).\n");
-		printf("(Enter 0 for a single frame in TAA).\n");
-		graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc );
-		return 0;
-	}
-	if( (T2!=0) && (!nise) ) {
-		printf("Error: Waiting time T2 must be zero for static spectral calculations.\n");
-		graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc );
-		return 0;
-	}
-
+	// Determining number of polarizations to be simulated and POL array.
 	npol = zzzz + zzyy + zyyz + zyzy;
-
-	if( ((reph+nreph)==0) && (!no2d) ) {
-		printf("Nothing to calculate! Please request either rephasing or non-rephasing.\n");
-		graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc );
-		return 0;
-	}
+	// Checking if there is at least one polarization to be simulated in 2D IR computation.
 	if( (npol==0) && (!no2d) ) {
 		printf("Nothing to calculate! Please select at least one polarization condition.\n");
 		printf("Note that the default values for ZYYZ and ZYZY are false.\n");
-		graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc );
+		graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc );
 		return 0;
 	} else {
 		int count = 0;
@@ -2048,7 +2067,31 @@ int main ( int argc, char * argv[] ) {
 			count++;
 		}
 	}
-	
+	// Checking if tstep size is greater than zero when providing scan time.
+	if( (tstep<=0) && (tscan>0) ) {
+		printf("Please supply a (positive) trajectory time step in fsec (-tstep flag).\n");
+		graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc );
+		return 0;
+	} else if (tscan==0) tstep = 20;
+	// Checking the supplied scan time is greater than zero.
+	if( (tscan<0) ) {
+		printf("Please supply a (non-negative) scan time step in fsec (-tscan flag).\n");
+		printf("(Enter 0 for a single frame in TAA).\n");
+		graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc );
+		return 0;
+	}
+	// Checking if T2 is zero for static spectral simulation
+	if( (T2!=0) && (!nise) ) {
+		printf("Error: Waiting time T2 must be zero for static spectral calculations.\n");
+		graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc );
+		return 0;
+	}
+	// Checking if there are non-zero Liouville pathways to be simulated.
+	if( ((reph+nreph)==0) && (!no2d) ) {
+		printf("Nothing to calculate! Please request either rephasing or non-rephasing.\n");
+		graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc );
+		return 0;
+	}
 	
 /***************************************************************************************
  Hamiltonian and Dipole files: check for consistency and open pointers 
@@ -2095,15 +2138,20 @@ int main ( int argc, char * argv[] ) {
 	
 	// The buffer length must be nread-1 frames longer than the required time window
 	// so that we can hold nread complete windows in memory at once. 
-	if(no2d || (!nise) ) nbuffer = window + nread - 1;
+	// cjfeng 06/29/2016
+	// nbuffer definition changes when 2D NISE simulation is performed, resulting in 
+	// incorrect scanning of FTIR correlation function. nbuffer1d is declared to
+	// correct the indicies when computing CorrFunc[n].
+	if(no2d || (!nise) ) nbuffer = window + nread - 1;	// Still useful in less memory allocation in only FTIR .
 	else nbuffer = win2d + nread - 1;
+	nbuffer1d = window + nread -1;
 
 	// Define frequency axis (only actually used for NISE calculations). 
 	GNREAL dw = (1.0) / (winzpad*tstep*c); 	// Transform resolution in cm-1
-	int maxit = 1e+9;
+	int maxit = 1e+9;			// Max number of iterations
 	int ndxstart = -1;
-	GNREAL tol = dw/2.0;
-	GNREAL wdif = 2*tol;
+	GNREAL tol = dw/2.0;	// Tolerance
+	GNREAL wdif = 2*tol;	// Frequency difference.
 	while( (wdif>tol)  && (ndxstart<maxit) ) {
 		ndxstart++;
 		if( (ndxstart*dw-wstart)>=0 ) wdif = ndxstart*dw-wstart;
@@ -2112,14 +2160,13 @@ int main ( int argc, char * argv[] ) {
 	if(wdif>tol) printf("Error finding start frequency. Frequency axis should not be trusted!\n");
 	int nprint = (int) ( wstop - wstart )/dw;
 
-
 	// Set file names for opening. 
 	make_fnames( Infoname, Hamname, hamnm, Dipnames, dipxnm, dipynm, dipznm, Sitesname, sitesnm, axisnm, ftirnm, lognm, polnm, rephnm, nrephnm, Trajnm, Parname, paramnm, outname, deffnm, do_traj );
 
 	// Read info file
 	int info  = read_info( ifp, Infoname, &NNames, &NNums, &CNames, &CNums);
 	if(info<0) { 
-		graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc);
+		graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc);
 		return 0;
 	} else if(info>0) {
 		printf("Successfully read info file. Will be looking for %d oscillators in input files. \n", info);
@@ -2130,7 +2177,7 @@ int main ( int argc, char * argv[] ) {
 		printf("Reading parameters from file %s.\n", Parname);
 		if(!parse_shifts(Parname, &nshift, maxchar)) {
 			printf("Error parsing parameter file %s. Please check input.\n", Parname);
-			graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc);
+			graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc);
 			return 0;
 		}
 		printf("Loaded %d oscillator shifts: \n", nshift);
@@ -2146,7 +2193,7 @@ int main ( int argc, char * argv[] ) {
 
 	if(nframes<nbuffer-nread+1) {
 		printf("Error: Not enough (%d) frames for accurate averaging with requested window size (%d).\n", nframes, window);
-		graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc);
+		graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc);
 		return 0;
 	}
 
@@ -2159,15 +2206,14 @@ int main ( int argc, char * argv[] ) {
 	printf("Located %d oscillators in input file %s\n", nosc, Hamname);
 	if( (nosc!=info) && (info!=0) ) {
 		printf("Error! Info file specifies %d oscillators, but found %d in Hamiltonian file. \n", info, nosc);
-		graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc);
+		graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc);
 		return 0;
 	}
 	for(i=0; i<nshift; i++) {
 		if(SHIFTNDX[i]>=nosc) {
 			printf("Error! Requested shift index (oscillator %d) is larger than total number of oscillators.\n", SHIFTNDX[i]);
-			graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc);
+			graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc);
 			return 0;
-
 		}
 	}
 	
@@ -2177,13 +2223,13 @@ int main ( int argc, char * argv[] ) {
 		vals = count_lines(Sitesname);
 		if((nframes!=vals)) {
 			printf("Error! Different number of lines (%d vs. %d) in Hamiltonian file %s and sites file %s\n", nframes, vals, Hamname, Sitesname);
-			graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc);
+			graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc);
 			return 0;
 		}
 		vals = count_entries(Sitesname);
 		if(nosc!=vals) {
 			printf("Error! Different number of oscillators (%d vs. %d) located in Hamiltonian file %s and sites file %s\n", nosc, vals, Hamname, Sitesname); 
-			graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc);
+			graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc);
 			return 0;
 		}
 	}
@@ -2192,33 +2238,37 @@ int main ( int argc, char * argv[] ) {
 		vals = count_entries(Dipnames[i]);
 		if(vals!=nosc) {
 			printf("Error! Different number of oscillators (%d vs. %d) in Hamiltonian file %s and dipole file %s\n", vals, nosc, Hamname, Dipnames[i]);
-			graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc);
+			graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc);
 			return 0;
 		}
 		vals = count_lines(Dipnames[i]);
 		if(vals!=nframes) {
 			printf("Error! Different number of lines (%d vs. %d) in Hamiltonian file %s and dipole file %s\n", vals, nframes, Hamname, Dipnames[i]);
-			graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc);
+			graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc);
 			return 0;
 		}
 	}
-
 
 	// Open files
 	if(!error) error = open_all( Hamname, Dipnames, Sitesname, axisnm, ftirnm, lognm, npol, POL, rephnm, nrephnm, Trajnm, no2d, do_traj );
 	if(!error) printf("Finished opening files.\n");
 	
 	// Allocate memory
-	error = allocate_all( window, win2d, winzpad, nosc, nread, nbuffer, nthreads, n2Q, pert, no2d, tstep, TauP, npts, nise );
+	error = allocate_all( window, win2d, winzpad, nosc, nbuffer, nthreads, n2Q, pert, no2d, tstep, TauP, npts, nise );
 	if(!error) printf("Finished allocating memory.\n");
+	// cjfeng 06/27/2016
+	// Tracking memory usage.
+	getrusage(RUSAGE_SELF, &r_usage);
+	printf("Memory usage = %ld kB.\n", r_usage.ru_maxrss);
 
 	// And go!
-	int alldone = 0;
-	int readframe = 0;
-	int fr = 0;
+	int alldone = 0;	// Flag for indicating completing all of the calculations.
+	int readframe = 0;	// End point of the read frames
+	int fr = 0;				// index for referencing reference point during spectral simulation
 	int frame = 0;
 	int nAvgd = 0; // Used only for static calculation
 
+	// Start monitoring time amount of time required during the spectral simulation.
 	starttime = omp_get_wtime();
 	if(!error) printf("Beginning trajectory parsing...\n");
 	// Step through trajectory until all frames have been processed
@@ -2227,14 +2277,20 @@ int main ( int argc, char * argv[] ) {
 		// Read 1Q data for the next nread frames and store in Ham1QMat and Dip1QMat
 		for(fr=readframe; fr<MIN(nframes,readframe+nread); fr++) {
 			int tnum = 0;
+			// cjfeng 06/27/2016
+			// Reduce the number of modulus operations.
+			int xfr = fr%nbuffer;	
+
 			// First Hamiltonian
-			if(!read_line(hfp, nosc, nosc, Ham1QMat[fr%nbuffer])) {
+			if(!read_line(hfp, nosc, nosc, Ham1QMat[xfr])) {
+			// if(!read_line(hfp, nosc, nosc, Ham1QMat[fr%nbuffer])) {
 				printf("Error reading from Hamiltonian file.\n");
 				error = 1;
 				break;
 			}
 			// Now dipole moments
-			for(i=0; i<3; i++) if(!read_line(Dfp[i], nosc, 1, Dip1QMat[i][fr%nbuffer])) {
+			for(i=0; i<3; i++) if(!read_line(Dfp[i], nosc, 1, Dip1QMat[i][xfr])) {
+			// for(i=0; i<3; i++) if(!read_line(Dfp[i], nosc, 1, Dip1QMat[i][fr%nbuffer])) {
 				printf("Error reading from Dipole file.\n");
 				error = 1;
 				break;
@@ -2247,19 +2303,22 @@ int main ( int argc, char * argv[] ) {
 					break; 	
 				} else {
 					for(i=0; i<nosc; i++) {
-						Ham1QMat[fr%nbuffer][i*nosc+i] = SitesBuffer[i];
+						Ham1QMat[xfr][i*nosc+i] = SitesBuffer[i];
+						// Ham1QMat[fr%nbuffer][i*nosc+i] = SitesBuffer[i];
 					}
 				}
 			}
 			// Add any specified shifts to the Hamiltonian matrix
 			for(i=0; i<nshift; i++) {
-				Ham1QMat[fr%nbuffer][SHIFTNDX[i]*nosc+SHIFTNDX[i]] = Ham1QMat[fr%nbuffer][SHIFTNDX[i]*nosc+SHIFTNDX[i]] + SHIFT[i]; 
+				Ham1QMat[xfr][SHIFTNDX[i]*nosc+SHIFTNDX[i]] = Ham1QMat[xfr][SHIFTNDX[i]*nosc+SHIFTNDX[i]] + SHIFT[i]; 
+				// Ham1QMat[fr%nbuffer][SHIFTNDX[i]*nosc+SHIFTNDX[i]] = Ham1QMat[fr%nbuffer][SHIFTNDX[i]*nosc+SHIFTNDX[i]] + SHIFT[i]; 
 			}
 			if( (!no2d) ) {
 				// Generate two-quantum dipoles
 				// 04/05/2016 cjfeng
 				// Swapped the order of direction and frame due to changing the allocation of Dip2QMat.
-				for(i=0; i<3; i++) gen_dip_2Q(Dip1QMat[i][fr%nbuffer], Dip2QMat[fr%nbuffer][i], nosc, n2Q);
+				for(i=0; i<3; i++) gen_dip_2Q(Dip1QMat[i][xfr], Dip2QMat[xfr][i], nosc, n2Q);
+				// for(i=0; i<3; i++) gen_dip_2Q(Dip1QMat[i][fr%nbuffer], Dip2QMat[fr%nbuffer][i], nosc, n2Q);
 				// 04/05/2016 cjfeng
 				// The orginal line
 				// for(i=0; i<3; i++) gen_dip_2Q(Dip1QMat[i][fr%nbuffer], Dip2QMat[i][fr%nbuffer], nosc, n2Q);
@@ -2273,46 +2332,83 @@ int main ( int argc, char * argv[] ) {
 
 		// And update the total number of read frames. 
 		readframe = fr;
+		if(nthreads>1) {
+			omp_set_num_threads(nthreads);
+		}	
 		// Now process the new frames. 
+/*************************************************************************************************
+ * NISE branch: solving eigenvalues and eigenvectors explicitly on every single frame.
+ * And then propagate linear and non-linear response functions.
+ *************************************************************************************************/
 		if( (!error) && (nise)) {
-			if(nthreads>1) {
-				omp_set_num_threads(nthreads);
-			}	
+			int nosc2=nosc*nosc;
 			// Again we use fr as our frame counter. It runs from readframe-justread 
 			// (the first of the newly read frames) to readframe-1. 
 			
 			// cjfeng 03/31/2016
 			// The parallel section won't be executed under single thread
 			// to avoid overhead.
+
+			// Solving eigenvalues and eigenvectors of 1Q Hamiltonian.
 			#if OMP_PARALLEL 
-			#pragma omp parallel if(nthreads>1) shared(justread, Ham1QMat, nosc, n2Q, Ham2QAr, no2d, pert, nbuffer, Evals1QAr, OffD1QAr, Tau1QAr, U1QMat, wo) private(fr, i, j) firstprivate(readframe)
+			#pragma omp parallel if(nthreads>1) shared(justread, Ham1QMat, Evals1QAr, OffD1QAr, Tau1QAr, U1QMat) private(fr, i, j) firstprivate(readframe, wo, nosc, nosc2, expfac)
 			#endif
 			{
+				// cjfeng 06/27/2016
+				// Use locay array instead for solving eigenvalue and eigenvectors to slight improve the data locality.
+				GNREAL *OffD1Qtmp, *Tau1Qtmp, *Evals1Qtmp, *Ham1Qtmp;
+				OffD1Qtmp = (GNREAL*) malloc((nosc)*sizeof(GNREAL));
+				Tau1Qtmp = (GNREAL*) malloc(nosc2*sizeof(GNREAL));
+				Evals1Qtmp = (GNREAL*) malloc(nosc*sizeof(GNREAL));
+				Ham1Qtmp = (GNREAL*) malloc(nosc2*sizeof(GNREAL));
+				int *isuppz1Q = (int*) malloc(2*nosc*sizeof(int));
 				#if OMP_PARALLEL
 				#pragma omp for schedule(guided) nowait
 				#endif
 				for(fr=readframe-justread; fr<readframe; fr++) {
+					// cjfeng 06/27/2016
+					// Reduce modulus operations.
+					int xfr = fr%nbuffer;
 					int tid;
 					double val;
 					lapack_int info;
 					tid = omp_get_thread_num();
-					if( (!no2d) && (!pert) ) {
-						// Generate two-quantum Hamiltonian--must be done before eigenvalue decomposition
-						// destroys Ham1QMat[fr%nbuffer]. Note that we store in Ham2QAr (length nthreads) rather 
-						// than in Ham2QMat (length nbuffer). The eigenvectors will not be stored from 
-						// frame to frame, only the propagators in U2QMat (length nbuffer). 
-						if(!pert) gen_ham_2Q(Ham1QMat[fr%nbuffer], nosc, Ham2QAr[tid], n2Q, delta);
-					}
+					// if( (!no2d) && (!pert) ) {
+					// 	// Generate two-quantum Hamiltonian--must be done before eigenvalue decomposition
+					// 	// destroys Ham1QMat[fr%nbuffer]. Note that we store in Ham2QAr (length nthreads) rather 
+					// 	// than in Ham2QMat (length nbuffer). The eigenvectors will not be stored from 
+					// 	// frame to frame, only the propagators in U2QMat (length nbuffer). 
+					// 	gen_ham_2Q(Ham1QMat[xfr], nosc, Ham2QAr[tid], n2Q, delta);
+					// 	// if(!pert) gen_ham_2Q(Ham1QMat[fr%nbuffer], nosc, Ham2QAr[tid], n2Q, delta);
+					// 	
+					// }
 					// Find one-quantum eigenvalues
 					// Note that Ham1QMat[fr%nbuffer] now contains eigenvectors
-					info = SYTRD( LAPACK_ROW_MAJOR, 'U', (lapack_int) nosc, Ham1QMat[fr%nbuffer], (lapack_int) nosc, Evals1QAr[tid], OffD1QAr[tid], Tau1QAr[tid]);
-					info = ORGTR( LAPACK_ROW_MAJOR, 'U', nosc, Ham1QMat[fr%nbuffer], (lapack_int) nosc, Tau1QAr[tid] );
-					info = STEQR( LAPACK_ROW_MAJOR, 'V', nosc, Evals1QAr[tid], OffD1QAr[tid], Ham1QMat[fr%nbuffer], (lapack_int) nosc);
+					// cjfeng 06/27/2016
+					// Use temporary array to solve eigenvalues and eigenvectors.
+					// cjfeng 06/27/2016
+					// Use the Relatively Robust Representation to compute eigenvalues and eigenvectors.
+					for (i=0; i<nosc2; i++) Ham1Qtmp[i] = Ham1QMat[xfr][i];
+					info = SYEVR (LAPACK_ROW_MAJOR, 'V', 'A', 'U', nosc, Ham1Qtmp, nosc, wstart, wstop, 0, nosc-1, 0.00001, &nosc, Evals1Qtmp, Ham1Qtmp, nosc, isuppz1Q);
+					// info = SYTRD( LAPACK_ROW_MAJOR, 'U', (lapack_int) nosc, Ham1Qtmp, (lapack_int) nosc, Evals1Qtmp, OffD1Qtmp, Tau1Qtmp);
+					// info = ORGTR( LAPACK_ROW_MAJOR, 'U', nosc, Ham1Qtmp, (lapack_int) nosc, Tau1Qtmp );
+					
+					// printf("Before STEDC.\n");
+					// info = STEDC( LAPACK_ROW_MAJOR, 'V', nosc, Evals1Qtmp, OffD1Qtmp, Ham1Qtmp, (lapack_int) nosc);
+					// info = STEGR(LAPACK_ROW_MAJOR, 'V', 'A', nosc, Evals1Qtmp, OffD1Qtmp, 0, 0, 0, 0, 0.000001, &nosc, Evals1Qtmp, Ham1Qtmp, (lapack_int) nosc, isuppz1Q);
+					// printf("After STEDC.\n");
+					// info = STEQR( LAPACK_ROW_MAJOR, 'V', nosc, Evals1Qtmp, OffD1Qtmp, Ham1Qtmp, (lapack_int) nosc);
+					// info = SYTRD( LAPACK_ROW_MAJOR, 'U', (lapack_int) nosc, Ham1QMat[xfr], (lapack_int) nosc, Evals1QAr[tid], OffD1QAr[tid], Tau1QAr[tid]);
+					// info = ORGTR( LAPACK_ROW_MAJOR, 'U', nosc, Ham1QMat[xfr], (lapack_int) nosc, Tau1QAr[tid] );
+					// info = STEQR( LAPACK_ROW_MAJOR, 'V', nosc, Evals1QAr[tid], OffD1QAr[tid], Ham1QMat[xfr], (lapack_int) nosc);
 
 					// Note that our Hamiltonian is actually H/(h*c)
 					// The exponent we calculate is -i*2*pi*tstep*c*Ham1Q
-				
-					for(i=0; i<nosc; i++) for(j=0; j<nosc; j++) U1QMat[fr%nbuffer][i*nosc+j] = 0.0; 
+			
+					// Generating 1Q propagator.
+					// cjfeng 06/27/2016
+					// Reduce for loop overhead.	
+					for(i=0; i<nosc2; i++) U1QMat[xfr][i] = 0.0; 
 					for(i=0; i<nosc; i++) {
 						GNREAL cre, cim; 
 						for(j=0; j<nosc; j++) {
@@ -2320,571 +2416,750 @@ int main ( int argc, char * argv[] ) {
 							cre = 0.0;
 							cim = 0.0;
 							for(k=0; k<nosc; k++) {
-								cre += Ham1QMat[fr%nbuffer][i*nosc+k]*Ham1QMat[fr%nbuffer][j*nosc+k]*cos(expfac*(Evals1QAr[tid][k]-wo));
-								cim += Ham1QMat[fr%nbuffer][i*nosc+k]*Ham1QMat[fr%nbuffer][j*nosc+k]*sin(expfac*(Evals1QAr[tid][k]-wo));
+								// cjfeng 06/27/2016
+								// Use temporary array instead.
+								cre += Ham1Qtmp[i*nosc+k]*Ham1Qtmp[j*nosc+k]*cos(expfac*(Evals1Qtmp[k]-wo));
+								cim += Ham1Qtmp[i*nosc+k]*Ham1Qtmp[j*nosc+k]*sin(expfac*(Evals1Qtmp[k]-wo));
+								// cre += Ham1QMat[xfr][i*nosc+k]*Ham1QMat[xfr][j*nosc+k]*cos(expfac*(Evals1QAr[tid][k]-wo));
+								// cim += Ham1QMat[xfr][i*nosc+k]*Ham1QMat[xfr][j*nosc+k]*sin(expfac*(Evals1QAr[tid][k]-wo));
 							}
-							U1QMat[fr%nbuffer][i*nosc+j] = cre + I*cim;
+							U1QMat[xfr][i*nosc+j] = cre + I*cim;
 							//printf("%6.5f + (%6.5f)i\t", creal(U1QMat[fr%nbuffer][i*nosc+j]), cimag(U1QMat[fr%nbuffer][i*nosc+j]));
 						}
 						//printf("\n");
 					}
 					//printf("\n");
 	
-					if( (!no2d) && (!pert) ) {
-						// Two-quantum eigenvalues
-						//printf("Starting eigenvalue calculation for thread %d\n", tid);
-						info = SYTRD( LAPACK_ROW_MAJOR, 'U', (lapack_int) n2Q, Ham2QAr[tid], (lapack_int) n2Q, Evals2QAr[tid], OffD2QAr[tid], Tau2QAr[tid]);
-						info = ORGTR( LAPACK_ROW_MAJOR, 'U', n2Q, Ham2QAr[tid], (lapack_int) n2Q, Tau2QAr[tid] );
-						info = STEQR( LAPACK_ROW_MAJOR, 'V', n2Q, Evals2QAr[tid], OffD2QAr[tid], Ham2QAr[tid], (lapack_int) n2Q);
-						//printf("Finishing eigenvalue calculation for thread %d\n", tid);
-						for(i=0; i<n2Q; i++) for(j=0; j<n2Q; j++) U2QMat[fr%nbuffer][i*n2Q+j] = 0.0; 
-						for(i=0; i<n2Q; i++) {
-							GNREAL cre, cim; 
-							for(j=0; j<n2Q; j++) {
-								int k;
-								cre = 0.0;
-								cim = 0.0;
-								for(k=0; k<n2Q; k++) {
-									cre += Ham2QAr[tid][i*n2Q+k]*Ham2QAr[tid][j*n2Q+k]*cos(expfac*(Evals2QAr[tid][k]-wo));
-									cim += Ham2QAr[tid][i*n2Q+k]*Ham2QAr[tid][j*n2Q+k]*sin(expfac*(Evals2QAr[tid][k]-wo));
-								}
-								U2QMat[fr%nbuffer][i*n2Q+j] = cre + I*cim;
-								//printf("%6.5f + (%6.5f)i\t", creal(U2QMat[fr%nbuffer][i*n2Q+j]), cimag(U2QMat[fr%nbuffer][i*n2Q+j]));
-							}
-							//printf("\n");
-						}
-					} else if( (!no2d) & pert ) {
-						// Skip eigenvalue calculation and use perturbative approximation to generate U2Q
-						gen_pert_prop( U1QMat[fr%nbuffer], U2QMat[fr%nbuffer], nosc, n2Q, expfac, delta);
-					}
-				}
-			}
-		}
-		fr = -1;
-		frame = readframe-nread;
-		// Now do calculations for selected frames. 
-		while( (fr!=-2) && (!error) ) {
-			// Step through all recently read frames to see whether frame
-			// is suitable as the end point of a calculation. 
-			// The time window twin is either window or win2d, depending 
-			// on whether no2d = 1 or 0. 
-			int twin = nbuffer-nread+1;
-			while(frame<readframe) {
-				if((frame%100)==0) {
-					printf("Frame: %d\n", frame);
-					fprintf(lfp, "Frame: %d\n", frame);
-					fflush(lfp);
-				}
-				// We check if at least window or win2d frames have been read 
-				// and if frame is a multiple of skip. 
-				if( ((frame%skip)==0) && (frame>=twin-1) ) {
-					// frame will be the endpoint of the calculation. 
-					// It will start at frame fr = frame-twin+1.
-					fr = (frame-twin+1)%nbuffer;
-					break;
-				} else frame++;
-			}
-			// If we got all the way through the fr loop without finding anything
-			// set fr = -2 to break out of the outside loop.
-			if(frame==readframe) fr = -2;
-			if( (fr>=0) && (nise) ) {
-				// Do a dynamic calculation using fr as our starting point and augment frame.
-				frame++;  // We don't reference frame further in the calculation. 
-
-				int xfr = 0;
-				int n,k;
-				GNCOMP cval;
-				
-				for(i=0; i<nosc; i++) for(j=0; j<nosc; j++) U1Q[i*nosc+j] = 0.0;
-				for(i=0; i<nosc; i++) U1Q[i*nosc+i] = 1.0;
-				
-				if(nthreads>1) {
-					omp_set_num_threads(nthreads);
-				}
-				for(n=0; n<window; n++) {
-					xfr = (fr+n)%nbuffer;
-					cval = 0.0;
-					// if(nthreads>1) {
-					// 	omp_set_num_threads(nthreads);
-					// }
-					#if OMP_PARALLEL
-					#pragma omp parallel if(nthreads>1) shared(nosc,cDip1Q,U1Q,Dip1QMat,xfr,fr) private(i,j,k)
-					#endif
-					{
-						// cjfeng 04/06/2016
-						// reduction used to avoid race condition
-						#if OMP_PARALLEL
-						#pragma omp for schedule(guided) collapse(2) reduction(+:cval)
-						#endif
-						for(i=0; i<3; i++) {
-							for(j=0; j<nosc; j++) {
-								cDip1Q[i][j] = 0.0;
-								for(k=0; k<nosc; k++) cDip1Q[i][j] += U1Q[j*nosc+k]*Dip1QMat[i][fr][k];
-								cval += Dip1QMat[i][xfr][j]*cDip1Q[i][j];
-							}
-						}
-					}
-					CorrFunc[n] += cval;
-					// cjfeng 04/06/2016
-					// U1Qs is transposed
-
-					// And multiply by U1QMat[xfr] to extend propagation by one frame. The result goes in U1Q.
-					// mmult_comp(U1QMat[xfr], U1Qs, U1Q, nosc, nthreads);
-
-					trans_comp(U1Q,U1Qs,nosc,nosc,nthreads);
-					if(nosc>=NBCOMP) {
-						mmult_comp_block(U1QMat[xfr], U1Qs, U1Q, nosc, nthreads);
-					}
-					else {	
-						mmult_comp_trans(U1QMat[xfr], U1Qs, U1Q, nosc, nthreads);
-					}
-				}
-
-				if(!no2d) {
-					// For 2D spectra, we need 1Q propagators from 
-					// 	t0-->t1
-					// 	t0-->t1+t2
-					// 	t0-->t1+t2+t3
-					// 	t1-->t1+t2
-					// 	t1-->t1+t2+t3
-					// 	t1+t2-->t1+t2+t3
-					// The 2Q propagator will be needed only from 
-					// t1+t2 to t1+t2+t3.
-				
-					// xfr1, xfr2, and xfr3 will point to the location 
-					// of the tau1, tau2, and tau3 frames, respectively. 
-					int tau, tau1, tau2, tau3;
-					int xfr0, xfr1, xfr2, xfr3;
-					tau2 = T2/tstep;
-					xfr0 = fr%nbuffer;
-
-					// Initialize first frame of psi_a[i] array to be simply Dip1Qmat[i][0]
-					for(i=0; i<3; i++) for(j=0; j<nosc; j++) psi_a[i][0][j] = Dip1QMat[i][fr%nbuffer][j];
-					
-					// cjfeng 04/06/2016
-					// Block version added but now the condition is moved outside the nested loop.
-					// Block version removed since race condition can occur. It is to be fixed.
-					// if(nosc>=NBCOMP) {
-					// 	for(i=0; i<3; i++) {
-					// 		for(tau=0; tau<win2d-1; tau++) {
-					// 			// Fill in psi_a array. 
-					// 			// psi_a[i][tau+1] = U1QMat[(fr+tau)%nbuffer]*psi_a[i][tau];
-					//  			mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_a[i][tau], psi_a[i][tau+1], nosc, nosc, nthreads);
+					// if( (!no2d) && (!pert) ) {
+					// 	// Two-quantum eigenvalues
+					// 	//printf("Starting eigenvalue calculation for thread %d\n", tid);
+					// 	info = SYTRD( LAPACK_ROW_MAJOR, 'U', (lapack_int) n2Q, Ham2QAr[tid], (lapack_int) n2Q, Evals2QAr[tid], OffD2QAr[tid], Tau2QAr[tid]);
+					// 	info = ORGTR( LAPACK_ROW_MAJOR, 'U', n2Q, Ham2QAr[tid], (lapack_int) n2Q, Tau2QAr[tid] );
+					// 	info = STEQR( LAPACK_ROW_MAJOR, 'V', n2Q, Evals2QAr[tid], OffD2QAr[tid], Ham2QAr[tid], (lapack_int) n2Q);
+					// 	//printf("Finishing eigenvalue calculation for thread %d\n", tid);
+					// 	for(i=0; i<n2Q*n2Q; i++) U2QMat[xfr][i] = 0.0; 
+					// 	for(i=0; i<n2Q; i++) {
+					// 		GNREAL cre, cim; 
+					// 		for(j=0; j<n2Q; j++) {
+					// 			int k;
+					// 			cre = 0.0;
+					// 			cim = 0.0;
+					// 			for(k=0; k<n2Q; k++) {
+					// 				cre += Ham2QAr[tid][i*n2Q+k]*Ham2QAr[tid][j*n2Q+k]*cos(expfac*(Evals2QAr[tid][k]-wo));
+					// 				cim += Ham2QAr[tid][i*n2Q+k]*Ham2QAr[tid][j*n2Q+k]*sin(expfac*(Evals2QAr[tid][k]-wo));
+					// 			}
+					// 			U2QMat[xfr][i*n2Q+j] = cre + I*cim;
+					// 			//printf("%6.5f + (%6.5f)i\t", creal(U2QMat[fr%nbuffer][i*n2Q+j]), cimag(U2QMat[fr%nbuffer][i*n2Q+j]));
 					// 		}
+					// 		//printf("\n");
 					// 	}
+					// } 
+					// else if( (!no2d) & pert ) {
+					// 	// Skip eigenvalue calculation and use perturbative approximation to generate U2Q
+					// 	gen_pert_prop( U1QMat[xfr], U2QMat[xfr], nosc, n2Q, expfac, delta);
 					// }
-					// else {
-						for(i=0; i<3; i++) {
-							for(tau=0; tau<win2d-1; tau++) {
-								// Fill in psi_a array. 
-								// psi_a[i][tau+1] = U1QMat[(fr+tau)%nbuffer]*psi_a[i][tau];
-								mvmult_comp(U1QMat[(fr+tau)%nbuffer], psi_a[i][tau], psi_a[i][tau+1], nosc, nthreads);
+				}
+				free(OffD1Qtmp);
+				free(Tau1Qtmp);
+				free(Evals1Qtmp);
+				free(Ham1Qtmp);
+				free(isuppz1Q);
+			}
+			// cjfeng 06/27/2016
+			// Uncouple the 2D eigenvalue procedure from 1Q part.
+			if ( !no2d ) {	// Generating 2Q Propagator.
+				int n2Q2= n2Q*n2Q;
+				// Solving eigenvalues and eigenvectors of 2Q Hamiltonian.
+				#if OMP_PARALLEL 
+				#pragma omp parallel if(nthreads>1) shared(justread, Ham1QMat, Evals2QAr, OffD2QAr, Tau2QAr, U1QMat, U2QMat) private(fr, i, j) firstprivate(readframe, wo, n2Q, no2d, pert, expfac, delta, nosc)
+				#endif
+				{
+					// cjfeng 06/27/2016
+					// Use temporary array.
+					GNREAL *OffD2Qtmp, *Tau2Qtmp, *Evals2Qtmp, *Ham2Qtmp;
+					OffD2Qtmp = (GNREAL*) malloc(n2Q*sizeof(GNREAL));
+					Tau2Qtmp = (GNREAL*) malloc(n2Q2*sizeof(GNREAL));
+					Evals2Qtmp = (GNREAL*) malloc(n2Q*sizeof(GNREAL));
+					Ham2Qtmp = (GNREAL*) malloc(n2Q2*sizeof(GNREAL));
+					int *isuppz2Q = (int*) malloc(2*n2Q*sizeof(int));
+					#if OMP_PARALLEL
+					#pragma omp for schedule(guided) nowait
+					#endif
+					for(fr=readframe-justread; fr<readframe; fr++) {
+						// cjfeng 06/27/2016
+						// Reduce modulus operations.
+						int xfr = fr%nbuffer;
+						int tid;
+						double val;
+						lapack_int info;
+						tid = omp_get_thread_num();
+						if( pert ) {
+							// Skip eigenvalue calculation and use perturbative approximation to generate U2Q
+							gen_pert_prop( U1QMat[xfr], U2QMat[xfr], nosc, n2Q, expfac, delta);
+						}
+						else {	// Two-quantum eigenvalues
+					 		gen_ham_2Q(Ham1QMat[xfr], nosc, Ham2Qtmp, n2Q, delta);
+							// printf("Starting eigenvalue calculation for thread %d\n", tid);
+
+							info = SYEVR (LAPACK_ROW_MAJOR, 'V', 'A', 'U', n2Q, Ham2Qtmp, n2Q, wstart, wstop, 0, n2Q-1, 0.00001, &n2Q, Evals2Qtmp, Ham2Qtmp, n2Q, isuppz2Q);
+							// info = SYTRD( LAPACK_ROW_MAJOR, 'U', (lapack_int) n2Q, Ham2Qtmp, (lapack_int) n2Q, Evals2Qtmp, OffD2Qtmp, Tau2Qtmp);
+							// info = ORGTR( LAPACK_ROW_MAJOR, 'U', n2Q, Ham2Qtmp, (lapack_int) n2Q, Tau2Qtmp );
+							// cjfeng 06/28/2016
+							// Use Divide and Conquer algorithm.
+							// info = STEDC( LAPACK_ROW_MAJOR, 'V', n2Q, Evals2Qtmp, OffD2Qtmp, Ham2Qtmp, (lapack_int) n2Q);
+							// cjfeng 06/28/2016
+							// Use Relatively Robust Representations algorithm.
+							// info = STEGR( LAPACK_ROW_MAJOR, 'V', 'A', n2Q, Evals2Qtmp, OffD2Qtmp, 0, 0, 0, 0, 0.000001, &n2Q, Evals2Qtmp, Ham2Qtmp, (lapack_int) n2Q, isuppz2Q);
+							// info = STEQR( LAPACK_ROW_MAJOR, 'V', n2Q, Evals2Qtmp, OffD2Qtmp, Ham2Qtmp, (lapack_int) n2Q);
+							// printf("Finishing eigenvalue calculation for thread %d\n", tid);
+
+							// Generating 2Q propagator
+							for(i=0; i<n2Q2; i++) U2QMat[xfr][i] = 0.0; 
+							for(i=0; i<n2Q; i++) {
+								GNREAL cre, cim; 
+								for(j=0; j<n2Q; j++) {
+									int k;
+									cre = 0.0;
+									cim = 0.0;
+									for(k=0; k<n2Q; k++) {
+										cre += Ham2Qtmp[i*n2Q+k]*Ham2Qtmp[j*n2Q+k]*cos(expfac*(Evals2Qtmp[k]-wo));
+										cim += Ham2Qtmp[i*n2Q+k]*Ham2Qtmp[j*n2Q+k]*sin(expfac*(Evals2Qtmp[k]-wo));
+									}
+									U2QMat[xfr][i*n2Q+j] = cre + I*cim;
+									//printf("%6.5f + (%6.5f)i\t", creal(U2QMat[fr%nbuffer][i*n2Q+j]), cimag(U2QMat[fr%nbuffer][i*n2Q+j]));
+								}
+								//printf("\n");
+							}
+						} 
+					}
+					free(OffD2Qtmp);
+					free(Tau2Qtmp); 
+					free(Evals2Qtmp);
+					free(Ham2Qtmp);
+					free(isuppz2Q);
+				}
+			}
+
+			// Numerical wavefunction propagation
+			// cjfeng 06/29/2016
+			// Uncouple the linear response from the entire spectral propagation
+			// to allow different window size scanning.
+			fr = -1;
+			frame = readframe-nread;
+			// Now do linear response calculations for selected frames. 
+			while( (fr!=-2) && (!error) ) {
+				// Step through all recently read frames to see whether frame
+				// is suitable as the end point of a calculation.
+				// The time window twin is window here.
+				int twin = nbuffer1d-nread+1;
+				// Monitoring the current simulation progress and memory usage.
+				while( frame < readframe ) {
+					if( (frame%100) == 0 ) {	
+						getrusage(RUSAGE_SELF, &r_usage);
+						printf("Frame: %d\n", frame);
+						printf("Memory usage = %ld kB.\n", r_usage.ru_maxrss);
+						fprintf(lfp, "Frame: %d\n", frame);
+						fflush(lfp);
+					}
+					// Checking at least window frames have been read
+					// and if frame is a multiple of skip.
+					if( ( (frame%skip)==0 ) && ( frame >= twin-1 ) ) {
+						fr = (frame-twin+1)%nbuffer;
+						break;
+					}	else frame++;
+				}
+				// If we got all the way through the fr loop without finding anything
+				// set fr = -2 to break out of the outside loop.
+				if(frame==readframe) fr = -2;
+				if( (fr>=0) && (nise) ) {
+					// Do a dynamic calculation using fr as our starting point and augment frame.
+					frame++;  // We don't reference frame further in the calculation. 
+
+					int xfr = 0;	// Delay time of the correlation function
+					int n,k;			// running n over correlation window, and k over nosc.
+					GNCOMP cval;	// Value for adding into CorrFunc[n];
+			
+					// cjfeng 06/29/2016
+					// Reduce for loop overhead.
+					int nosc2=nosc*nosc;
+					// Initialize the U1Q matrix for propagating wavepacket.
+					for(i=0; i<nosc2; i++) U1Q[i] = 0.0;
+					for(i=0; i<nosc; i++) U1Q[i*nosc+i] = 1.0;
+					
+					// Setting number of threads for parallel computation.
+					if(nthreads>1)	omp_set_num_threads(nthreads);
+					// Scanning through correlation window.
+					for(n=0; n<window; n++) {
+						xfr = (fr+n)%nbuffer;
+						cval = 0.0;
+						#if OMP_PARALLEL
+						#pragma omp parallel if(nthreads>1) shared(nosc,cDip1Q,U1Q,Dip1QMat,xfr,fr) private(i,j,k)
+						#endif
+						{
+							// cjfeng 04/06/2016
+							// reduction used to avoid race condition
+							#if OMP_PARALLEL
+							#pragma omp for schedule(guided) collapse(2) reduction(+:cval)
+							#endif
+							for(i=0; i<3; i++) {		// Running over dipx, dipy, and dipz.
+								for(j=0; j<nosc; j++) {		// Running over index of oscillators.
+									cDip1Q[i][j] = 0.0;			// Initialize the wavepacket.
+									for(k=0; k<nosc; k++) cDip1Q[i][j] += U1Q[j*nosc+k]*Dip1QMat[i][fr][k];	//Propagate the wavepacket from tau=0 to n.
+									cval += Dip1QMat[i][xfr][j]*cDip1Q[i][j];
+								}
 							}
 						}
+						CorrFunc[n] += cval;
+						// cjfeng 04/06/2016
+						// U1Qs is transposed
+						// And multiply by U1QMat[xfr] to extend propagation by one frame. The result goes in U1Q.
+						// mmult_comp(U1QMat[xfr], U1Qs, U1Q, nosc, nthreads);
+						trans_comp(U1Q, U1Qs, nosc, nosc, nthreads);
+						// Blocking optimization when U1QMat is larger than NBCOMP*NBCOMP matrix
+						if(nosc>=NBCOMP)	mmult_comp_block(U1QMat[xfr], U1Qs, U1Q, nosc, nthreads);
+						else	mmult_comp_trans(U1QMat[xfr], U1Qs, U1Q, nosc, nthreads);
+					}
+				}
+			}
+			// Propagating nonlinear response.
+			fr = -1;
+			frame = readframe-nread;
+			// Now do calculations for selected frames. 
+			while( (fr!=-2) && (!error) ) {
+				// Step through all recently read frames to see whether frame
+				// is suitable as the end point of a calculation. 
+				// The time window twin is win2d.
+				int twin = nbuffer-nread+1;
+				while(frame<readframe) {
+					// We check if win2d frames have been read 
+					// and if frame is a multiple of skip. 
+					if( ((frame%skip)==0) && (frame>=twin-1) ) {
+						// frame will be the endpoint of the calculation. 
+						// It will start at frame fr = frame-twin+1.
+						fr = (frame-twin+1)%nbuffer;
+						break;
+					} else frame++;
+				}
+				// If we got all the way through the fr loop without finding anything
+				// set fr = -2 to break out of the outside loop.
+				if(frame==readframe) fr = -2;
+				if( (fr>=0) && (nise) ) {
+					// Do a dynamic calculation using fr as our starting point and augment frame.
+					int n,k;	// running n over correlation window, and k over nosc.
+					frame++;  // We don't reference frame further in the calculation. 
+	
+					if(!no2d) {
+						// For 2D spectra, we need 1Q propagators from 
+						// 	t0-->t1
+						// 	t0-->t1+t2
+						// 	t0-->t1+t2+t3
+						// 	t1-->t1+t2
+						// 	t1-->t1+t2+t3
+						// 	t1+t2-->t1+t2+t3
+						// The 2Q propagator will be needed only from 
+						// t1+t2 to t1+t2+t3.
+					
+						// xfr1, xfr2, and xfr3 will point to the location 
+						// of the tau1, tau2, and tau3 frames, respectively. 
+						int tau, tau1, tau2, tau3;
+						int xfr0, xfr1, xfr2, xfr3;
+						tau2 = T2/tstep;
+						xfr0 = fr%nbuffer;
+	
+						// Initialize first frame of psi_a[i] array to be simply Dip1Qmat[i][0]
+						// cjfeng 06/27/2016
+						// Start using xfrs.
+						for(i=0; i<3; i++) for(j=0; j<nosc; j++) psi_a[i][0][j] = Dip1QMat[i][xfr0][j];
 						
-					// }
-
-					// cjfeng 04/05/2016
-					// Change the order of Dip2QMat to be a nbuffer*3*n2Q*nosc array.
-					for(tau1=0; tau1<window; tau1++) {
-
+						// cjfeng 04/06/2016
+						// Block version added but now the condition is moved outside the nested loop.
+						// Block version removed since race condition can occur. It is to be fixed.
+						// if(nosc>=NBCOMP) {
+						// 	for(i=0; i<3; i++) {
+						// 		for(tau=0; tau<win2d-1; tau++) {
+						// 			// Fill in psi_a array. 
+						// 			// psi_a[i][tau+1] = U1QMat[(fr+tau)%nbuffer]*psi_a[i][tau];
+						//  			mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_a[i][tau], psi_a[i][tau+1], nosc, nosc, nthreads);
+						// 		}
+						// 	}
+						// }
+						// else {
+							for(i=0; i<3; i++) {
+								for(tau=0; tau<win2d-1; tau++) {
+									// Fill in psi_a array. 
+									// psi_a[i][tau+1] = U1QMat[(fr+tau)%nbuffer]*psi_a[i][tau];
+									mvmult_comp(U1QMat[(fr+tau)%nbuffer], psi_a[i][tau], psi_a[i][tau+1], nosc, nthreads);
+								}
+							}
+							
+						// }
+	
 						// cjfeng 04/05/2016
-						// Initialize psi_b[i][tau1].
-						for(i=0; i<3; i++) for(j=0; j<nosc; j++) psi_b1[i][tau1][j] = Dip1QMat[i][(fr+tau1)%nbuffer][j];
-
-						// Fill in psi_b1 array
-						// psi_b1[i][tau+1] = U1QMat[(fr+tau)%nbuffer]*psi_b1[i][tau];
-						
-						// cjfeng 04/06/2016
-						// Block version added, and moved the if condition outside the nested loop.
-						// if(nosc>=NBCOMP) {
-						// 	for(i=0; i<3; i++) {
-						// 		for(tau=tau1; tau<tau1+tau2+window-1; tau++) {
-						// 			mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_b1[i][tau], psi_b1[i][tau+1], nosc, nosc, nthreads);
-						// 		}
-						// 	}
-						// }
-						// else {
-							for(i=0; i<3; i++) {
-								for(tau=tau1; tau<tau1+tau2+window-1; tau++) {
-									mvmult_comp(U1QMat[(fr+tau)%nbuffer], psi_b1[i][tau], psi_b1[i][tau+1], nosc, nthreads);
+						// Change the order of Dip2QMat to be a nbuffer*3*n2Q*nosc array.
+						for(tau1=0; tau1<window; tau1++) {
+	
+							// cjfeng 06/27/2016
+							// Start using xfrs
+							xfr1 = (fr+tau1)%nbuffer;
+							xfr2 = (fr+tau1+tau2)%nbuffer;
+							// cjfeng 04/05/2016
+							// Initialize psi_b[i][tau1].
+							for(i=0; i<3; i++) for(j=0; j<nosc; j++) psi_b1[i][tau1][j] = Dip1QMat[i][xfr1][j];
+	
+							// Fill in psi_b1 array
+							// psi_b1[i][tau+1] = U1QMat[(fr+tau)%nbuffer]*psi_b1[i][tau];
+							
+							// cjfeng 04/06/2016
+							// Block version added, and moved the if condition outside the nested loop.
+							// if(nosc>=NBCOMP) {
+							// 	for(i=0; i<3; i++) {
+							// 		for(tau=tau1; tau<tau1+tau2+window-1; tau++) {
+							// 			mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_b1[i][tau], psi_b1[i][tau+1], nosc, nosc, nthreads);
+							// 		}
+							// 	}
+							// }
+							// else {
+								for(i=0; i<3; i++) {
+									for(tau=tau1; tau<tau1+tau2+window-1; tau++) {
+										mvmult_comp(U1QMat[(fr+tau)%nbuffer], psi_b1[i][tau], psi_b1[i][tau+1], nosc, nthreads);
+									}
 								}
-							}
-						// }
-
-						// Initialize psi_b12[i][tau1+tau2].
-						for(i=0; i<3; i++) for(j=0; j<nosc; j++) psi_b12[i][tau1+tau2][j] = Dip1QMat[i][(fr+tau1+tau2)%nbuffer][j];
-
-						// Fill in psi_b12 array
-						//
-						// cjfeng 04/06/2016
-						// Block version added. and move the if condition
-						// outside the nested loop.
-						// psi_b12[i][tau+1] = U1QMat[(fr+tau)%nbuffer]*psi_b12[i][tau];
-						// if(nosc>=NBCOMP) {
-						// 	for(i=0; i<3; i++) {
-						// 		for(tau=tau1+tau2; tau<tau1+tau2+window-1; tau++) {
-						// 			mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_b12[i][tau], psi_b12[i][tau+1], nosc ,nosc, nthreads);
-						// 		}
-						// 	}
-						// }
-						// else {
-							for(i=0; i<3; i++) {
-								for(tau=tau1+tau2; tau<tau1+tau2+window-1; tau++) {
-									mvmult_comp(U1QMat[(fr+tau)%nbuffer], psi_b12[i][tau], psi_b12[i][tau+1], nosc, nthreads);
+							// }
+	
+							// Initialize psi_b12[i][tau1+tau2].
+							for(i=0; i<3; i++) for(j=0; j<nosc; j++) psi_b12[i][tau1+tau2][j] = Dip1QMat[i][xfr2][j];
+	
+							// Fill in psi_b12 array
+							//
+							// cjfeng 04/06/2016
+							// Block version added. and move the if condition
+							// outside the nested loop.
+							// psi_b12[i][tau+1] = U1QMat[(fr+tau)%nbuffer]*psi_b12[i][tau];
+							// if(nosc>=NBCOMP) {
+							// 	for(i=0; i<3; i++) {
+							// 		for(tau=tau1+tau2; tau<tau1+tau2+window-1; tau++) {
+							// 			mvmult_comp_block(U1QMat[(fr+tau)%nbuffer], psi_b12[i][tau], psi_b12[i][tau+1], nosc ,nosc, nthreads);
+							// 		}
+							// 	}
+							// }
+							// else {
+								for(i=0; i<3; i++) {
+									for(tau=tau1+tau2; tau<tau1+tau2+window-1; tau++) {
+										mvmult_comp(U1QMat[(fr+tau)%nbuffer], psi_b12[i][tau], psi_b12[i][tau+1], nosc, nthreads);
+									}
 								}
-							}
-
-						// }
-
-						// Initialize the 2Q wavefunctions. 
-						// psi_ca[i*3+j] = Dip2Q[j][tau1+tau2]*psi_a[i][tau1+tau2]
-						// psi_cb[i*3+j] = Dip2Q[j][tau1+tau2]*psi_b1[i][tau1+tau2]
-						
-						// cjfeng 04/06/2016
-						// The Dip2QMat has changed into nbuffer*3*n2Q*nosc array.
-						// Block version added, and moved the if condition outside
-						// the nested loop.
-						// cjfeng 04/22/2016
-						// Block version removed since race condition can occur.
-						// It is to be fixed.
-						// if(n2Q>=NBREAL) {
-						//	for(i=0; i<3; i++) {
-						//		for(j=0; j<3; j++) {
-						//			mvmult_mix_block(Dip2QMat[tau1+tau2][j], psi_a[i][tau1+tau2], psi_ca[i*3+j], nosc, n2Q, nthreads);
-						//			mvmult_mix_block(Dip2QMat[tau1+tau2][j], psi_b1[i][tau1+tau2], psi_cb[i*3+j], nosc, n2Q, nthreads);
-						//		}
-						//	}
-						//}
-						//else {
-							for(i=0; i<3; i++) {
-								for(j=0; j<3; j++) {
-									mvmult_comp_trans_x(Dip2QMat[tau1+tau2][j], psi_a[i][tau1+tau2], psi_ca[i*3+j], nosc, n2Q, nthreads);
-									mvmult_comp_trans_x(Dip2QMat[tau1+tau2][j], psi_b1[i][tau1+tau2], psi_cb[i*3+j], nosc, n2Q, nthreads);
+	
+							// }
+	
+							// Initialize the 2Q wavefunctions. 
+							// psi_ca[i*3+j] = Dip2Q[j][tau1+tau2]*psi_a[i][tau1+tau2]
+							// psi_cb[i*3+j] = Dip2Q[j][tau1+tau2]*psi_b1[i][tau1+tau2]
+							
+							// cjfeng 04/06/2016
+							// The Dip2QMat has changed into nbuffer*3*n2Q*nosc array.
+							// Block version added, and moved the if condition outside
+							// the nested loop.
+							// cjfeng 04/22/2016
+							// Block version removed since race condition can occur.
+							// It is to be fixed.
+							// if(n2Q>=NBREAL) {
+							//	for(i=0; i<3; i++) {
+							//		for(j=0; j<3; j++) {
+							//			mvmult_mix_block(Dip2QMat[tau1+tau2][j], psi_a[i][tau1+tau2], psi_ca[i*3+j], nosc, n2Q, nthreads);
+							//			mvmult_mix_block(Dip2QMat[tau1+tau2][j], psi_b1[i][tau1+tau2], psi_cb[i*3+j], nosc, n2Q, nthreads);
+							//		}
+							//	}
+							//}
+							//else {
+								for(i=0; i<3; i++) {
+									for(j=0; j<3; j++) {
+										mvmult_comp_trans_x(Dip2QMat[tau1+tau2][j], psi_a[i][tau1+tau2], psi_ca[i*3+j], nosc, n2Q, nthreads);
+										mvmult_comp_trans_x(Dip2QMat[tau1+tau2][j], psi_b1[i][tau1+tau2], psi_cb[i*3+j], nosc, n2Q, nthreads);
+									}
 								}
-							}
-
-						// }
-
-						for(tau3=0; tau3<window; tau3++) {
-
-							// Propagate 2Q wavefunctions. 
-							// psi_ca[i*3+j] = U2Q[tau3]*psi_ca[i*3+j]
-							// psi_cb[i*3+j] = U2Q[tau3]*psi_cb[i*3+j]
-							if(pert) {
-								gen_pert_prop( U1QMat[(fr+tau1+tau2+tau3)%nbuffer], U2Qs, nosc, n2Q, expfac, delta);
-								for(i=0; i<9; i++) {
-									for(j=0; j<n2Q; j++) psi2Q[j] = psi_ca[i][j];
-
-									// cjfeng 03/27/2016
-									// Including block optimization
-									// cjfeng 04/22/2016
-									// Block optmization removed because of race condition
-									// if(n2Q>=NBCOMP) {
-									// 	mvmult_comp_block(U2Qs, psi2Q, psi_ca[i], n2Q, n2Q, nthreads);
-									// }
-									// else {
-										mvmult_comp(U2Qs, psi2Q, psi_ca[i], n2Q, nthreads);
-									// }
-
-									for(j=0; j<n2Q; j++) psi2Q[j] = psi_cb[i][j];
-
-									// cjfeng 03/27/2016
-									// Including block optimization
-									// Block optimization removed because of race condition
-									// if(n2Q>=NBCOMP) {
-									// 	mvmult_comp_block(U2Qs, psi2Q, psi_cb[i], n2Q, n2Q, nthreads);
-									// } 
-									// else {
-										mvmult_comp(U2Qs, psi2Q, psi_cb[i], n2Q, nthreads);
-									// }
+	
+							// }
+	
+							for(tau3=0; tau3<window; tau3++) {
+	
+								// cjfeng 06/27/2016
+								// Start using xfr3.
+								xfr3 = (fr+tau1+tau2+tau3)%nbuffer;
+								// Propagate 2Q wavefunctions. 
+								// psi_ca[i*3+j] = U2Q[tau3]*psi_ca[i*3+j]
+								// psi_cb[i*3+j] = U2Q[tau3]*psi_cb[i*3+j]
+								if(pert) {
+									gen_pert_prop( U1QMat[xfr3], U2Qs, nosc, n2Q, expfac, delta);
+									for(i=0; i<9; i++) {
+										for(j=0; j<n2Q; j++) psi2Q[j] = psi_ca[i][j];
+	
+										// cjfeng 03/27/2016
+										// Including block optimization
+										// cjfeng 04/22/2016
+										// Block optmization removed because of race condition
+										// if(n2Q>=NBCOMP) {
+										// 	mvmult_comp_block(U2Qs, psi2Q, psi_ca[i], n2Q, n2Q, nthreads);
+										// }
+										// else {
+											mvmult_comp(U2Qs, psi2Q, psi_ca[i], n2Q, nthreads);
+										// }
+	
+										for(j=0; j<n2Q; j++) psi2Q[j] = psi_cb[i][j];
+	
+										// cjfeng 03/27/2016
+										// Including block optimization
+										// Block optimization removed because of race condition
+										// if(n2Q>=NBCOMP) {
+										// 	mvmult_comp_block(U2Qs, psi2Q, psi_cb[i], n2Q, n2Q, nthreads);
+										// } 
+										// else {
+											mvmult_comp(U2Qs, psi2Q, psi_cb[i], n2Q, nthreads);
+										// }
+									}
+								} else {
+									for(i=0; i<9; i++) {
+										for(j=0; j<n2Q; j++) psi2Q[j] = psi_ca[i][j];
+	
+										// cjfeng 03/27/2016
+										// Including block optimization
+										// cjfeng 04/20/2016
+										// Block optimization removed because of race condition
+										// if(n2Q>=NBCOMP) {
+										// 	mvmult_comp_block(U2QMat[(fr+tau1+tau2+tau3)%nbuffer], psi2Q, psi_ca[i], n2Q, n2Q, nthreads);
+										// }
+										// else {
+										     mvmult_comp(U2QMat[xfr3], psi2Q, psi_ca[i], n2Q, nthreads);
+										// }
+	
+										for(j=0; j<n2Q; j++) psi2Q[j] = psi_cb[i][j];
+										// cjfeng 03/27/2016
+										// Including block optimization
+										// cjfeng 04/20/2016
+										// Block optimization removed because of race condition
+										// if(n2Q>=NBCOMP) {
+										// 	mvmult_comp_block(U2QMat[(fr+tau1+tau2+tau3)%nbuffer], psi2Q, psi_cb[i], n2Q, n2Q, nthreads);
+										// }
+										// else {
+											mvmult_comp(U2QMat[xfr3], psi2Q, psi_cb[i], n2Q, nthreads);
+										// }
+									}	
 								}
-							} else {
-								for(i=0; i<9; i++) {
-									for(j=0; j<n2Q; j++) psi2Q[j] = psi_ca[i][j];
+								GNREAL popfac1Q = popdecay1Q[tau1+2*tau2+tau3];
+								GNREAL popfac2Q = popfac1Q*popdecay2Q[tau3];
+								GNCOMP cval1 = 0.0;
+								GNCOMP cval2 = 0.0;
+								int P,p,l;
+								for(P=0; P<npol; P++) {
+									int a, b;
+									// cjfeng 04/27/2016
+									// Adding local variable to reduce memory access
+									GNCOMP REPH_private;
+									GNCOMP NREPH_private;
+									REPH_private = 0.0;
+									NREPH_private = 0.0;
+									for(a=0; a<3; a++) {
+										for(b=0; b<3; b++) {
+											// p sums over the forms iiii, iijj, ijji, and ijij
+											for(p=0; p<4; p++) {
+												// cjfeng 04/06/2016
+												// Changed many if into else if 
+												if(p==0) { i=a; j=a; k=a; l=a; }
+												else if(p==1) { i=a; j=a; k=b; l=b; }
+												else if(p==2) { i=a; j=b; k=b; l=a; }
+												else { i=a; j=b; k=a; l=b; };		// p==3
+												// For p==0, we only add the signal when a==b. 
+												if( (p!=0) || (a!=b) ) {
+													// First rephasing pathway:
+													//
+													// 	| b 0 |
+													// 	| 0 0 |
+													// 	| 0 a |
+													// 	| 0 0 |
+													//
+													// The contribution to the rephasing spectrum is the orientionally averaged value
+													// 	( Dip1Q[t3+t2+t1]*psi_b12[tau1+tau2+tau3] ) * conj( Dip1Q[tau1] * psi_a[tau1] )
 
-									// cjfeng 03/27/2016
-									// Including block optimization
-									// cjfeng 04/20/2016
-									// Block optimization removed because of race condition
-									// if(n2Q>=NBCOMP) {
-									// 	mvmult_comp_block(U2QMat[(fr+tau1+tau2+tau3)%nbuffer], psi2Q, psi_ca[i], n2Q, n2Q, nthreads);
-									// }
-									// else {
-									     mvmult_comp(U2QMat[(fr+tau1+tau2+tau3)%nbuffer], psi2Q, psi_ca[i], n2Q, nthreads);
-									// }
-
-									for(j=0; j<n2Q; j++) psi2Q[j] = psi_cb[i][j];
-									// cjfeng 03/27/2016
-									// Including block optimization
-									// cjfeng 04/20/2016
-									// Block optimization removed because of race condition
-									// if(n2Q>=NBCOMP) {
-									// 	mvmult_comp_block(U2QMat[(fr+tau1+tau2+tau3)%nbuffer], psi2Q, psi_cb[i], n2Q, n2Q, nthreads);
-									// }
-									// else {
-										mvmult_comp(U2QMat[(fr+tau1+tau2+tau3)%nbuffer], psi2Q, psi_cb[i], n2Q, nthreads);
-									// }
-								}	
-							}
-							GNREAL popfac1Q = popdecay1Q[tau1+2*tau2+tau3];
-							GNREAL popfac2Q = popfac1Q*popdecay2Q[tau3];
-							GNCOMP cval1 = 0.0;
-							GNCOMP cval2 = 0.0;
-							int P,p,l;
-							for(P=0; P<npol; P++) {
-								int a, b;
-								// cjfeng 04/27/2016
-								// Adding local variable to reduce memory access
-								GNCOMP REPH_private;
-								GNCOMP NREPH_private;
-								REPH_private = 0.0;
-								NREPH_private = 0.0;
-								for(a=0; a<3; a++) {
-									for(b=0; b<3; b++) {
-										// p sums over the forms iiii, iijj, ijji, and ijij
-										for(p=0; p<4; p++) {
-											// cjfeng 04/06/2016
-											// Changed many if into else if 
-											if(p==0) { i=a; j=a; k=a; l=a; }
-											else if(p==1) { i=a; j=a; k=b; l=b; }
-											else if(p==2) { i=a; j=b; k=b; l=a; }
-											else { i=a; j=b; k=a; l=b; };		// p==3
-											// For p==0, we only add the signal when a==b. 
-											if( (p!=0) || (a!=b) ) {
-												// First rephasing pathway:
-												//
-												// 	| b 0 |
-												// 	| 0 0 |
-												// 	| 0 a |
-												// 	| 0 0 |
-												//
-												// The contribution to the rephasing spectrum is the orientionally averaged value
-												// 	( Dip1Q[t3+t2+t1]*psi_b12[tau1+tau2+tau3] ) * conj( Dip1Q[tau1] * psi_a[tau1] )
-
-												cval1 = 0.0; cval2 = 0.0;
+													cval1 = 0.0; cval2 = 0.0;
 												
-												for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][(fr+tau1+tau2+tau3)%nbuffer][n]*psi_b12[k][tau1+tau2+tau3][n];
-												for(n=0; n<nosc; n++) cval2 += Dip1QMat[j][(fr+tau1)%nbuffer][n]*psi_a[i][tau1][n];
-												REPH_private += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
-												// REPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
+													for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][xfr3][n]*psi_b12[k][tau1+tau2+tau3][n];
+													for(n=0; n<nosc; n++) cval2 += Dip1QMat[j][xfr1][n]*psi_a[i][tau1][n];
+													REPH_private += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
+													// REPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
 
-												// Second rephasing pathway:
-												//
-												// 	| b 0 |
-												// 	| b a |
-												// 	| 0 a |
-												// 	| 0 0 |
-												//
-												// The contribution to the rephasing spectrum is the orientionally averaged value
-												// 	( Dip1Q[tau3+tau2+tau1]*psi_b1[tau1+tau2+tau3] ) * conj( Dip1Q[tau2+tau1]*psi_a[tau2+tau1] )
-												cval1 = 0.0; cval2 = 0.0;
-												for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][(fr+tau1+tau2+tau3)%nbuffer][n]*psi_b1[j][tau1+tau2+tau3][n];
-												for(n=0; n<nosc; n++) cval2 += Dip1QMat[k][(fr+tau1+tau2)%nbuffer][n]*psi_a[i][tau1+tau2][n];
-												REPH_private += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
-												// REPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
+													// Second rephasing pathway:
+													//
+													// 	| b 0 |
+													// 	| b a |
+													// 	| 0 a |
+													// 	| 0 0 |
+													//
+													// The contribution to the rephasing spectrum is the orientionally averaged value
+													// 	( Dip1Q[tau3+tau2+tau1]*psi_b1[tau1+tau2+tau3] ) * conj( Dip1Q[tau2+tau1]*psi_a[tau2+tau1] )
+													cval1 = 0.0; cval2 = 0.0;
+													for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][xfr3][n]*psi_b1[j][tau1+tau2+tau3][n];
+													for(n=0; n<nosc; n++) cval2 += Dip1QMat[k][xfr2][n]*psi_a[i][tau1+tau2][n];
+													REPH_private += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
+													// REPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
 
-												// Final rephasing pathway:
-												//
-												// 	| c a |
-												// 	| b a |
-												// 	| 0 a |
-												// 	| 0 0 |
-												//
-												// The contribution to the rephasing spectrum is the orientionally averaged value
-												// 	( psi_cb[j*3+k] ) * ( Dip2Q[tau3+tau2+tau1]*psi_a[tau3+tau2+tau1] )^\dagger
+													// Final rephasing pathway:
+													//
+													// 	| c a |
+													// 	| b a |
+													// 	| 0 a |
+													// 	| 0 0 |
+													//
+													// The contribution to the rephasing spectrum is the orientionally averaged value
+													// 	( psi_cb[j*3+k] ) * ( Dip2Q[tau3+tau2+tau1]*psi_a[tau3+tau2+tau1] )^\dagger
 												
-												// cjfeng 04/05/2016
-												// Changed the order of Dip2QMat	
-												// to be a nbuffer*3*n2Q*nosc array
-												//
-												// cjfeng 03/27/2016
-												// Use block optimization to maintain speedup at large n2Q.
-												//
-												// if(n2Q>NBREAL) {
-												//	mvmult_mix_block(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_a[i][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
-												// }
-												// else {
-													mvmult_comp_trans_x(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_a[i][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
-												// }
+													// cjfeng 04/05/2016
+													// Changed the order of Dip2QMat	
+													// to be a nbuffer*3*n2Q*nosc array
+													//
+													// cjfeng 03/27/2016
+													// Use block optimization to maintain speedup at large n2Q.
+													//
+													// if(n2Q>NBREAL) {
+													//	mvmult_mix_block(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_a[i][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
+													// }
+													// else {
+														mvmult_comp_trans_x(Dip2QMat[xfr3][l], psi_a[i][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
+													// }
 												
-												cval1 = 0.0; 
-												for(n=0; n<n2Q; n++) cval1 += psi_cb[j*3+k][n]*conj(psi2Q[n]);
-												REPH[POL[P]][tau1*window+tau3] -= M_ijkl_IJKL[P][p]*cval1*popfac2Q;
+													cval1 = 0.0; 
+													for(n=0; n<n2Q; n++) cval1 += psi_cb[j*3+k][n]*conj(psi2Q[n]);
+													REPH_private -= M_ijkl_IJKL[P][p]*cval1*popfac2Q;
+													// REPH[POL[P]][tau1*window+tau3] -= M_ijkl_IJKL[P][p]*cval1*popfac2Q;
 
-												// First non-rephasing pathway: 
-												// 	
-												// 	| b 0 |
-												// 	| 0 0 |
-												// 	| a 0 |
-												// 	| 0 0 |
-												//
-												// The contribution to the non-rephasing spectrum is the orientationally averaged value
-												// 	( Dip1Q[tau1+tau2+tau3]*psi_b12[tau1+tau2+tau3] ) * ( Dip1Q[tau1]*psi_a[tau1] ) 
-												cval1 = 0.0; cval2 = 0.0;
-												for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][(fr+tau1+tau2+tau3)%nbuffer][n]*psi_b12[k][tau1+tau2+tau3][n];
-												for(n=0; n<nosc; n++) cval2 += Dip1QMat[j][(fr+tau1)%nbuffer][n]*psi_a[i][tau1][n];
-												NREPH_private += M_ijkl_IJKL[P][p]*cval1*cval2*popfac1Q;
-												// NREPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*cval2*popfac1Q;
+													// First non-rephasing pathway: 
+													// 	
+													// 	| b 0 |
+													// 	| 0 0 |
+													// 	| a 0 |
+													// 	| 0 0 |
+													//
+													// The contribution to the non-rephasing spectrum is the orientationally averaged value
+													// 	( Dip1Q[tau1+tau2+tau3]*psi_b12[tau1+tau2+tau3] ) * ( Dip1Q[tau1]*psi_a[tau1] ) 
+													cval1 = 0.0; cval2 = 0.0;
+													for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][xfr3][n]*psi_b12[k][tau1+tau2+tau3][n];
+													for(n=0; n<nosc; n++) cval2 += Dip1QMat[j][xfr1][n]*psi_a[i][tau1][n];
+													NREPH_private += M_ijkl_IJKL[P][p]*cval1*cval2*popfac1Q;
+													// NREPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*cval2*popfac1Q;
 
-												// Second non-rephasing pathway:
-												// 	| a 0 |
-												// 	| a b |
-												// 	| a 0 |
-												// 	| 0 0 |
-												//
-												// The contribution to the non-rephasing spectrum is the orientionally averaged value
-												// 	( Dip1Q[tau1+tau2+tau3]*psi_a[tau1+tau2+tau3] ) * conj( Dip1Q[tau1+tau2]*psi_b1[tau1+tau2] )
-												cval1 = 0.0; cval2 = 0.0;
-												for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][(fr+tau1+tau2+tau3)%nbuffer][n]*psi_a[i][tau1+tau2+tau3][n];
-												for(n=0; n<nosc; n++) cval2 += Dip1QMat[k][(fr+tau1+tau2)%nbuffer][n]*psi_b1[j][tau1+tau2][n];
-												NREPH_private += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
-												// NREPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
+													// Second non-rephasing pathway:
+													// 	| a 0 |
+													// 	| a b |
+													// 	| a 0 |
+													// 	| 0 0 |
+													//
+													// The contribution to the non-rephasing spectrum is the orientionally averaged value
+													// 	( Dip1Q[tau1+tau2+tau3]*psi_a[tau1+tau2+tau3] ) * conj( Dip1Q[tau1+tau2]*psi_b1[tau1+tau2] )
+													cval1 = 0.0; cval2 = 0.0;
+													for(n=0; n<nosc; n++) cval1 += Dip1QMat[l][xfr3][n]*psi_a[i][tau1+tau2+tau3][n];
+													for(n=0; n<nosc; n++) cval2 += Dip1QMat[k][xfr2][n]*psi_b1[j][tau1+tau2][n];
+													NREPH_private += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
+													// NREPH[POL[P]][tau1*window+tau3] += M_ijkl_IJKL[P][p]*cval1*conj(cval2)*popfac1Q;
 
-												// Final non-rephasing pathway:
-												// 	| c b |
-												// 	| a b |
-												// 	| a 0 |
-												// 	| 0 0 |
-												//
-												// The contribution to the non-rephasing spectrum is the orientationally averaged value
-												// 	( psi_ca[k*3+i] ) * ( Dip2Q[tau1+tau2+tau3]*psi_b1[tau1+tau2+tau3] )
-											
-												// cjfeng 04/05/2016
-												// Swapped the order of Dip2QMat.
-												//
-												// cjfeng 03/27/2016
-												// Use block optimization to maintain speedup at large n2Q.
-												// if(n2Q>=NBREAL) {
-												//	mvmult_mix_block(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_b1[j][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
-												// }
-												// else {
-													mvmult_comp_trans_x(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_b1[j][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
-												// }
-
-												// Swapping i and k
-												// cjfeng 06/08/2016
-												cval1 = 0.0;
-												for(n=0; n<n2Q; n++) cval1 += psi_ca[i*3+k][n]*conj(psi2Q[n]);
-												NREPH_private -= M_ijkl_IJKL[P][p]*cval1*popfac2Q;
-												// NREPH[POL[P]][tau1*window+tau3] -= M_ijkl_IJKL[P][p]*cval1*popfac2Q;
+													// Final non-rephasing pathway:
+													// 	| c b |
+													// 	| a b |
+													// 	| a 0 |
+													// 	| 0 0 |
+													//
+													// The contribution to the non-rephasing spectrum is the orientationally averaged value
+													// 	( psi_ca[k*3+i] ) * ( Dip2Q[tau1+tau2+tau3]*psi_b1[tau1+tau2+tau3] )
+												
+													// cjfeng 04/05/2016
+													// Swapped the order of Dip2QMat.
+													//
+													// cjfeng 03/27/2016
+													// Use block optimization to maintain speedup at large n2Q.
+													// if(n2Q>=NBREAL) {
+													//	mvmult_mix_block(Dip2QMat[(fr+tau3+tau2+tau1)%nbuffer][l], psi_b1[j][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
+													// }
+													// else {
+														mvmult_comp_trans_x(Dip2QMat[xfr3][l], psi_b1[j][tau1+tau2+tau3], psi2Q, nosc, n2Q, nthreads);
+													// }
+	
+													cval1 = 0.0;
+													// Swapping i and k
+													// cjfeng 06/08/2016
+													for(n=0; n<n2Q; n++) cval1 += psi_ca[i*3+k][n]*conj(psi2Q[n]);
+													NREPH_private -= M_ijkl_IJKL[P][p]*cval1*popfac2Q;
+													// NREPH[POL[P]][tau1*window+tau3] -= M_ijkl_IJKL[P][p]*cval1*popfac2Q;
+												}
 											}
 										}
 									}
+									// cjfeng 04/27/2016
+									REPH[POL[P]][tau1*window+tau3] += REPH_private;
+									NREPH[POL[P]][tau1*window+tau3] += NREPH_private;
 								}
-								// cjfeng 04/27/2016
-								REPH[POL[P]][tau1*window+tau3] += REPH_private;
-								NREPH[POL[P]][tau1*window+tau3] += NREPH_private;
 							}
 						}
 					}
+				} 
+			}
+		}
+/**************************************************************************
+ * Static averaging or Time-averaging approximation (TAA) brach
+ * Instead of solving eigenvalues and eigenvectors of every single frame,
+ * the averaged Hamiltonians are solved when applying TAA.
+ * And then adding dressed stick-like spectra with Lorentzian lineshape
+ * into FTIR (and 2D IR) spectrum.
+ * ************************************************************************/
+		else if( (!error) && (!nise)) {
+			fr = -1;
+			frame = readframe-nread;
+			// Now do calculations for selected frames. 
+			while( (fr!=-2) && (!error) ) {
+				// Step through all recently read frames to see whether frame
+				// is suitable as the end point of a calculation. 
+				// The time window twin is win2d.
+				int twin = nbuffer-nread+1;
+				while(frame<readframe) {
+					if( (frame%100) == 0 ) {	
+						getrusage(RUSAGE_SELF, &r_usage);
+						printf("Frame: %d\n", frame);
+						printf("Memory usage = %ld kB.\n", r_usage.ru_maxrss);
+						fprintf(lfp, "Frame: %d\n", frame);
+						fflush(lfp);
+					}
+					// We check if window frames have been read 
+					// and if frame is a multiple of skip. 
+					if( ((frame%skip)==0) && (frame>=twin-1) ) {
+						// frame will be the endpoint of the calculation. 
+						// It will start at frame fr = frame-twin+1.
+						fr = (frame-twin+1)%nbuffer;
+						break;
+					} else frame++;
 				}
-			} else if( (fr>=0) && (!nise) ) {
-				int k;
+				// If we got all the way through the fr loop without finding anything
+				// set fr = -2 to break out of the outside loop.
+				if(frame==readframe) fr = -2;
+				if( (fr>=0) && (!nise) ) {
+					int k;
 
-				// Generate averaged Hamiltonian for a window starting at frame fr 
-				// and augment frame. The average Hamiltonian is stored in Ham1QAr. 
-				// If Ham1QAr gets filled up, we stop and do a spectral calculation 
-				// for all stored frames before proceeding. 
-				frame++;  // We don't reference frame further in the calculation. 
-				// Generate averaged Hamiltonian. 
-				for(j=0; j<nosc*nosc; j++) Ham1QAr[nAvgd][j] = 0.0;
-				for(i=0; i<3; i++) for(j=0; j<nosc; j++) Dip1QAr[i][nAvgd][j] = 0.0;
-				if( (!no2d) && ((!pert) || pertvec) ) for(i=0; i<3; i++) for(j=0; j<(nosc*n2Q); j++) Dip2QAr[i][nAvgd][j] = 0.0;
-				if(whann) {
-					for(i=0; i<window; i++) for(j=0; j<nosc*nosc; j++) Ham1QAr[nAvgd][j] += Ham1QMat[(fr+i)%nbuffer][j]*hann[i];
-					for(i=0; i<3; i++) for(j=0; j<nosc; j++) Dip1QAr[i][nAvgd][j] = Dip1QMat[i][(fr+((int) (window/2)))%nbuffer][j];
-					// cjfeng 04/05/2016
-					// Dip2QAr is not transposed compared to the original form.
-					// However, Dip2QMat is now a nbuffer*3*n2Q*nosc array.
-					// It will be slower than before due to swapping the order of Dip2QMat.
-					if( (!no2d) && ((!pert) || pertvec) ) for(i=0; i<3; i++) for(j=0; j<nosc; j++) for(k=0; k<n2Q; k++) Dip2QAr[i][nAvgd][j*n2Q+k] = Dip2QMat[(fr+((int) (window/2)))%nbuffer][i][k*nosc+j];
-					// cjfeng 04/05/2016
-					// The original line
-					// if( (!no2d) && ((!pert) || pertvec) ) for(i=0; i<3; i++) for(j=0; j<(nosc*n2Q); j++) Dip2QAr[i][nAvgd][j] = Dip2QMat[i][(fr+((int) (window/2)))%nbuffer][j];
-				} else {
-					for(i=0; i<window; i++) for(j=0; j<nosc*nosc; j++) Ham1QAr[nAvgd][j] += Ham1QMat[(fr+i)%nbuffer][j]/window;
-					for(i=0; i<3; i++) for(j=0; j<nosc; j++) Dip1QAr[i][nAvgd][j] = Dip1QMat[i][(fr+((int) (window/2)))%nbuffer][j];
-					// cjfeng 04/05/2016
-					// Dip2QAr is not transposed compared to the original form.
-					if( (!no2d) && ( (!pert) || pertvec )) for(i=0; i<3; i++) for(j=0; j<nosc; j++) for(k=0; k<n2Q; k++) Dip2QAr[i][nAvgd][j*n2Q+k] = Dip2QMat[(fr+((int) (window/2)))%nbuffer][i][k*nosc+j];
-					// The original line
-					// if( (!no2d) && ( (!pert) || pertvec )) for(i=0; i<3; i++) for(j=0; j<(nosc*n2Q); j++) Dip2QAr[i][nAvgd][j] = Dip2QMat[i][(fr+((int) (window/2)))%nbuffer][j];
-				}
-				nAvgd++;
-
-				// If we've filled up the Ham1QAr array, do a calculation and re-start. 
-				if(nAvgd==nthreads) {
-					int thr;
-					lapack_int info;
-					for(thr=0; thr<nthreads; thr++) {
-						int tid = omp_get_thread_num();
-						// If needed, generate 2Q Hamiltonian. This MUST be done before eigenvalue calculation. 
-						if( (!no2d) && (!pert) ) gen_ham_2Q(Ham1QAr[tid], nosc, Ham2QAr[tid], n2Q, delta);
-						// Find one-quantum eigenvalues
-						// Note that Ham1QAr[tid] now contains eigenvectors
-
-						info = SYTRD( LAPACK_ROW_MAJOR, 'U', (lapack_int) nosc, Ham1QAr[tid], (lapack_int) nosc, Evals1QAr[tid], OffD1QAr[tid], Tau1QAr[tid]);
-						info = ORGTR( LAPACK_ROW_MAJOR, 'U', nosc, Ham1QAr[tid], (lapack_int) nosc, Tau1QAr[tid] );
-						info = STEQR( LAPACK_ROW_MAJOR, 'V', nosc, Evals1QAr[tid], OffD1QAr[tid], Ham1QAr[tid], (lapack_int) nosc);
-		
-						// Calculate one-quantum dipole moments
-						for(i=0; i<3; i++) mvmult_real_serial_trans(Ham1QAr[tid], Dip1QAr[i][tid], ExDip1QAr[i][tid], nosc, nthreads);
-						// Calculate FTIR spectrum
-						int n,N,d,ndx,k,K;
-						GNREAL osc; 
-						
-						for(n=0; n<nosc; n++) {
-
-							osc = 0.0;
-							for(d=0; d<3; d++) osc += ExDip1QAr[d][tid][n]*ExDip1QAr[d][tid][n];
-							ndx = floor( (Evals1QAr[tid][n]-wstart)/wres + 0.5 );
-							if(ndx<npts && ndx>=0) ftir[ndx] += osc;
-						}
-						if( (!no2d) && (!pert) ) {
-							// Two-quantum eigenvalues
-							// Note that Ham2QAr[tid] now contains eigenvectors
-							info = SYTRD( LAPACK_ROW_MAJOR, 'U', (lapack_int) n2Q, Ham2QAr[tid], (lapack_int) n2Q, Evals2QAr[tid], OffD2QAr[tid], Tau2QAr[tid]);
-							info = ORGTR( LAPACK_ROW_MAJOR, 'U', n2Q, Ham2QAr[tid], (lapack_int) n2Q, Tau2QAr[tid] );
-							info = STEQR( LAPACK_ROW_MAJOR, 'V', n2Q, Evals2QAr[tid], OffD2QAr[tid], Ham2QAr[tid], (lapack_int) n2Q);
-							for(i=0; i<3; i++) {
-								for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) ExDip2QAr[i][tid][n*n2Q+N] = 0.0;
-								for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) for(k=0; k<nosc; k++) ExDip2QAr[i][tid][n*n2Q+N] += Ham1QAr[tid][k*nosc+n]*Dip2QAr[i][tid][k*n2Q+N];
-								for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) Dip2QAr[i][tid][n*n2Q+N] = ExDip2QAr[i][tid][n*n2Q+N];
-								for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) ExDip2QAr[i][tid][n*n2Q+N] = 0.0;
-								for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) for(K=0; K<n2Q; K++) ExDip2QAr[i][tid][n*n2Q+N] += Dip2QAr[i][tid][n*n2Q+K]*Ham2QAr[tid][K*n2Q+N];
-							}
-							// Now calculate the 2D spectrum. 
-							calc_2dir(Evals1QAr, Evals2QAr, ExDip1QAr, ExDip2QAr, tid, nosc, n2Q, npts, wres, wstart, wstop, REPH, NREPH, POL, npol, reph, nreph);
-						} else if( (!no2d) && (!pertvec) ) {
-							// Generate first-order anharmonically perturbed 2Q energies.
-							// Remember that Ham1QAr[tid] now contains eigenvectors. 
-							gen_perturb_2Q_energies(Ham1QAr[tid], Evals1QAr[tid], Evals2QAr[tid], nosc, delta);
-							// And calculate the 2D spectrum. 
-							calc_2dir_pert(Evals1QAr, Evals2QAr, ExDip1QAr, tid, nosc, n2Q, npts, wres, wstart, wstop, REPH, NREPH, POL, npol, reph, nreph);
-						} else if( (!no2d) && (pertvec) ) {
-							// Generate first-order anharmonically perturbed 2Q energies.
-							// Remember that Ham1QAr[tid] now contains eigenvectors. 
-							gen_perturb_2Q_energies(Ham1QAr[tid], Evals1QAr[tid], Evals2QAr[tid], nosc, delta);
-							// Generate Eigenvectors
-							//gen_perturb_2Q_matrix(Ham1QAr[tid], Evals1QAr[tid], Ham2QAr[tid], Evals2QAr[tid], Tau2QAr[tid], nosc, n2Q, delta);
-							gen_perturb_2Q_vectors(Ham1QAr[tid], Evals1QAr[tid], Ham2QAr[tid], Evals2QAr[tid], Tau2QAr[tid], nosc, n2Q, delta);
-							// And calculate the 2D spectrum. 
-							for(i=0; i<3; i++) {
-								for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) ExDip2QAr[i][tid][n*n2Q+N] = 0.0;
-								for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) for(k=0; k<nosc; k++) ExDip2QAr[i][tid][n*n2Q+N] += Ham1QAr[tid][k*nosc+n]*Dip2QAr[i][tid][k*n2Q+N];
-								for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) Dip2QAr[i][tid][n*n2Q+N] = ExDip2QAr[i][tid][n*n2Q+N];
-								for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) ExDip2QAr[i][tid][n*n2Q+N] = 0.0;
-								for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) for(K=0; K<n2Q; K++) ExDip2QAr[i][tid][n*n2Q+N] += Dip2QAr[i][tid][n*n2Q+K]*Ham2QAr[tid][K*n2Q+N];
-							}
-							// Now calculate the 2D spectrum. 
-							calc_2dir(Evals1QAr, Evals2QAr, ExDip1QAr, ExDip2QAr, tid, nosc, n2Q, npts, wres, wstart, wstop, REPH, NREPH, POL, npol, reph, nreph);
+					// Generate averaged Hamiltonian for a window starting at frame fr 
+					// and augment frame. The average Hamiltonian is stored in Ham1QAr. 
+					// If Ham1QAr gets filled up, we stop and do a spectral calculation 
+					// for all stored frames before proceeding. 
+					frame++;  // We don't reference frame further in the calculation. 
+					// Generate averaged Hamiltonian. 
+					for(j=0; j<nosc*nosc; j++) Ham1QAr[nAvgd][j] = 0.0;
+					// cjfeng 06/27/2016
+					// Unroll the loop.
+					for(j=0; j<nosc; j++) {
+						Dip1QAr[0][nAvgd][j] = 0.0;
+						Dip1QAr[1][nAvgd][j] = 0.0;
+						Dip1QAr[2][nAvgd][j] = 0.0;
+					}
+					// for(i=0; i<3; i++) for(j=0; j<nosc; j++) Dip1QAr[i][nAvgd][j] = 0.0;
+					// cjfeng 06/27/2016
+					// Unroll the loop
+					if( (!no2d) && ((!pert) || pertvec) ) {
+						for(j=0; j<(nosc*n2Q); j++) {
+							Dip2QAr[0][nAvgd][j] = 0.0;
+							Dip2QAr[1][nAvgd][j] = 0.0;
+							Dip2QAr[2][nAvgd][j] = 0.0;
 						}
 					}
-					nAvgd = 0;
+					// if( (!no2d) && ((!pert) || pertvec) ) for(i=0; i<3; i++) for(j=0; j<(nosc*n2Q); j++) Dip2QAr[i][nAvgd][j] = 0.0;
+					if(whann) {
+						for(i=0; i<window; i++) for(j=0; j<nosc*nosc; j++) Ham1QAr[nAvgd][j] += Ham1QMat[(fr+i)%nbuffer][j]*hann[i];
+						for(i=0; i<3; i++) for(j=0; j<nosc; j++) Dip1QAr[i][nAvgd][j] = Dip1QMat[i][(fr+((int) (window/2)))%nbuffer][j];
+						// cjfeng 04/05/2016
+						// Dip2QAr is not transposed compared to the original form.
+						// However, Dip2QMat is now a nbuffer*3*n2Q*nosc array.
+						// It will be slower than before due to swapping the order of Dip2QMat.
+						if( (!no2d) && ((!pert) || pertvec) ) for(i=0; i<3; i++) for(j=0; j<nosc; j++) for(k=0; k<n2Q; k++) Dip2QAr[i][nAvgd][j*n2Q+k] = Dip2QMat[(fr+((int) (window/2)))%nbuffer][i][k*nosc+j];
+						// cjfeng 04/05/2016
+						// The original line
+						// if( (!no2d) && ((!pert) || pertvec) ) for(i=0; i<3; i++) for(j=0; j<(nosc*n2Q); j++) Dip2QAr[i][nAvgd][j] = Dip2QMat[i][(fr+((int) (window/2)))%nbuffer][j];
+					} else {
+						for(i=0; i<window; i++) for(j=0; j<nosc*nosc; j++) Ham1QAr[nAvgd][j] += Ham1QMat[(fr+i)%nbuffer][j]/window;
+						for(i=0; i<3; i++) for(j=0; j<nosc; j++) Dip1QAr[i][nAvgd][j] = Dip1QMat[i][(fr+((int) (window/2)))%nbuffer][j];
+						// cjfeng 04/05/2016
+						// Dip2QAr is not transposed compared to the original form.
+						if( (!no2d) && ( (!pert) || pertvec )) for(i=0; i<3; i++) for(j=0; j<nosc; j++) for(k=0; k<n2Q; k++) Dip2QAr[i][nAvgd][j*n2Q+k] = Dip2QMat[(fr+((int) (window/2)))%nbuffer][i][k*nosc+j];
+						// The original line
+						// if( (!no2d) && ( (!pert) || pertvec )) for(i=0; i<3; i++) for(j=0; j<(nosc*n2Q); j++) Dip2QAr[i][nAvgd][j] = Dip2QMat[i][(fr+((int) (window/2)))%nbuffer][j];
+					}
+					nAvgd++;
+
+					// If we've filled up the Ham1QAr array, do a calculation and re-start. 
+					if(nAvgd==nthreads) {
+						int thr;
+						lapack_int info;
+						for(thr=0; thr<nthreads; thr++) {
+							int tid = omp_get_thread_num();
+							// If needed, generate 2Q Hamiltonian. This MUST be done before eigenvalue calculation. 
+							if( (!no2d) && (!pert) ) gen_ham_2Q(Ham1QAr[tid], nosc, Ham2QAr[tid], n2Q, delta);
+							// Find one-quantum eigenvalues
+							// Note that Ham1QAr[tid] now contains eigenvectors
+
+							info = SYTRD( LAPACK_ROW_MAJOR, 'U', (lapack_int) nosc, Ham1QAr[tid], (lapack_int) nosc, Evals1QAr[tid], OffD1QAr[tid], Tau1QAr[tid]);
+							info = ORGTR( LAPACK_ROW_MAJOR, 'U', nosc, Ham1QAr[tid], (lapack_int) nosc, Tau1QAr[tid] );
+							info = STEQR( LAPACK_ROW_MAJOR, 'V', nosc, Evals1QAr[tid], OffD1QAr[tid], Ham1QAr[tid], (lapack_int) nosc);
+			
+							// Calculate one-quantum dipole moments
+							for(i=0; i<3; i++) mvmult_real_serial_trans(Ham1QAr[tid], Dip1QAr[i][tid], ExDip1QAr[i][tid], nosc, nthreads);
+							// Calculate FTIR spectrum
+							int n,N,d,ndx,k,K;
+							GNREAL osc; 
+							
+							for(n=0; n<nosc; n++) {
+
+								osc = 0.0;
+								for(d=0; d<3; d++) osc += ExDip1QAr[d][tid][n]*ExDip1QAr[d][tid][n];
+								ndx = floor( (Evals1QAr[tid][n]-wstart)/wres + 0.5 );
+								if(ndx<npts && ndx>=0) ftir[ndx] += osc;
+							}
+							if( (!no2d) && (!pert) ) {
+								// Two-quantum eigenvalues
+								// Note that Ham2QAr[tid] now contains eigenvectors
+								info = SYTRD( LAPACK_ROW_MAJOR, 'U', (lapack_int) n2Q, Ham2QAr[tid], (lapack_int) n2Q, Evals2QAr[tid], OffD2QAr[tid], Tau2QAr[tid]);
+								info = ORGTR( LAPACK_ROW_MAJOR, 'U', n2Q, Ham2QAr[tid], (lapack_int) n2Q, Tau2QAr[tid] );
+								info = STEQR( LAPACK_ROW_MAJOR, 'V', n2Q, Evals2QAr[tid], OffD2QAr[tid], Ham2QAr[tid], (lapack_int) n2Q);
+								for(i=0; i<3; i++) {
+									for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) ExDip2QAr[i][tid][n*n2Q+N] = 0.0;
+									for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) for(k=0; k<nosc; k++) ExDip2QAr[i][tid][n*n2Q+N] += Ham1QAr[tid][k*nosc+n]*Dip2QAr[i][tid][k*n2Q+N];
+									for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) Dip2QAr[i][tid][n*n2Q+N] = ExDip2QAr[i][tid][n*n2Q+N];
+									for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) ExDip2QAr[i][tid][n*n2Q+N] = 0.0;
+									for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) for(K=0; K<n2Q; K++) ExDip2QAr[i][tid][n*n2Q+N] += Dip2QAr[i][tid][n*n2Q+K]*Ham2QAr[tid][K*n2Q+N];
+								}
+								// Now calculate the 2D spectrum. 
+								calc_2dir(Evals1QAr, Evals2QAr, ExDip1QAr, ExDip2QAr, tid, nosc, n2Q, npts, wres, wstart, wstop, REPH, NREPH, POL, npol, reph, nreph);
+							} else if( (!no2d) && (!pertvec) ) {
+								// Generate first-order anharmonically perturbed 2Q energies.
+								// Remember that Ham1QAr[tid] now contains eigenvectors. 
+								gen_perturb_2Q_energies(Ham1QAr[tid], Evals1QAr[tid], Evals2QAr[tid], nosc, delta);
+								// And calculate the 2D spectrum. 
+								calc_2dir_pert(Evals1QAr, Evals2QAr, ExDip1QAr, tid, nosc, n2Q, npts, wres, wstart, wstop, REPH, NREPH, POL, npol, reph, nreph);
+							} else if( (!no2d) && (pertvec) ) {
+								// Generate first-order anharmonically perturbed 2Q energies.
+								// Remember that Ham1QAr[tid] now contains eigenvectors. 
+								gen_perturb_2Q_energies(Ham1QAr[tid], Evals1QAr[tid], Evals2QAr[tid], nosc, delta);
+								// Generate Eigenvectors
+								//gen_perturb_2Q_matrix(Ham1QAr[tid], Evals1QAr[tid], Ham2QAr[tid], Evals2QAr[tid], Tau2QAr[tid], nosc, n2Q, delta);
+								gen_perturb_2Q_vectors(Ham1QAr[tid], Evals1QAr[tid], Ham2QAr[tid], Evals2QAr[tid], Tau2QAr[tid], nosc, n2Q, delta);
+								// And calculate the 2D spectrum. 
+								for(i=0; i<3; i++) {
+									for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) ExDip2QAr[i][tid][n*n2Q+N] = 0.0;
+									for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) for(k=0; k<nosc; k++) ExDip2QAr[i][tid][n*n2Q+N] += Ham1QAr[tid][k*nosc+n]*Dip2QAr[i][tid][k*n2Q+N];
+									for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) Dip2QAr[i][tid][n*n2Q+N] = ExDip2QAr[i][tid][n*n2Q+N];
+									for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) ExDip2QAr[i][tid][n*n2Q+N] = 0.0;
+									for(n=0; n<nosc; n++) for(N=0; N<n2Q; N++) for(K=0; K<n2Q; K++) ExDip2QAr[i][tid][n*n2Q+N] += Dip2QAr[i][tid][n*n2Q+K]*Ham2QAr[tid][K*n2Q+N];
+								}
+								// Now calculate the 2D spectrum. 
+								calc_2dir(Evals1QAr, Evals2QAr, ExDip1QAr, ExDip2QAr, tid, nosc, n2Q, npts, wres, wstart, wstop, REPH, NREPH, POL, npol, reph, nreph);
+							}
+						}
+						nAvgd = 0;
+					}
 				}
 			}
 		}
+
 		fr = -1;
 		frame = readframe-nread;
 		// Now do calculations for selected frames. 
@@ -2931,13 +3206,20 @@ int main ( int argc, char * argv[] ) {
 
 				// Now 2DIR
 				if(!no2d) {
+					int winzpad2=winzpad*winzpad;
 					GNCOMP cval = 0.0;
 					int p;
 					// FT and print rephasing spectra
 					for(p=0; p<npol; p++) {
 						for(i=0; i<window; i++) for(j=0; j<window; j++) NetREPH[POL[p]][i*window+j] += REPH[POL[p]][i*window+j];
-						for(i=0; i<winzpad; i++) for(j=0; j<winzpad; j++) FTin2D[i*winzpad+j][0] = 0.0;
-						for(i=0; i<winzpad; i++) for(j=0; j<winzpad; j++) FTin2D[i*winzpad+j][1] = 0.0;
+						// cjfeng 06/27/2016
+						// Reduce loop overhead.
+						for(i=0; i<winzpad2; i++) {
+							FTin2D[i][0] = 0.0;
+							FTin2D[i][1] = 0.0;
+						}
+						// for(i=0; i<winzpad; i++) for(j=0; j<winzpad; j++) FTin2D[i*winzpad+j][0] = 0.0;
+						// for(i=0; i<winzpad; i++) for(j=0; j<winzpad; j++) FTin2D[i*winzpad+j][1] = 0.0;
 						// Apply Hann window, if requested. 
 						if(whann) {
 							for(i=0; i<window; i++) for(j=0; j<window; j++) FTin2D[i*winzpad+j][0] = creal(REPH[POL[p]][i*window+j])*hann[i];
@@ -2951,8 +3233,15 @@ int main ( int argc, char * argv[] ) {
 						// For rephasing only: flip spectrum along w1
 						for(i=0; i<winzpad; i++) for(j=0; j<winzpad; j++) FTin2D[i*winzpad+j][0] = FTout2D[(winzpad-1-i)*winzpad+j][0];
 						for(i=0; i<winzpad; i++) for(j=0; j<winzpad; j++) FTin2D[i*winzpad+j][1] = FTout2D[(winzpad-1-i)*winzpad+j][1];
-						for(i=0; i<winzpad; i++) for(j=0; j<winzpad; j++) FTout2D[i*winzpad+j][0] = FTin2D[i*winzpad+j][0];
-						for(i=0; i<winzpad; i++) for(j=0; j<winzpad; j++) FTout2D[i*winzpad+j][1] = FTin2D[i*winzpad+j][1];
+						// cjfeng 06/27/2016
+						// Reduce loop overhead.
+						//
+						for(i=0; i<winzpad2; i++) {
+							FTout2D[i][0] = FTin2D[i][0];
+							FTout2D[i][1] = FTin2D[i][1];
+						}
+						// for(i=0; i<winzpad; i++) for(j=0; j<winzpad; j++) FTout2D[i*winzpad+j][0] = FTin2D[i*winzpad+j][0];
+						// for(i=0; i<winzpad; i++) for(j=0; j<winzpad; j++) FTout2D[i*winzpad+j][1] = FTin2D[i*winzpad+j][1];
 						int ndx1, ndx3;
 						for(i=0; i<nprint; i++) {
 							ndx1 = (ndxstart+i)%winzpad;
@@ -2970,8 +3259,14 @@ int main ( int argc, char * argv[] ) {
 					// FT and print non-rephasing spectra
 					for(p=0; p<npol; p++) {
 						for(i=0; i<window; i++) for(j=0; j<window; j++) NetNREPH[POL[p]][i*window+j] += NREPH[POL[p]][i*window+j];
-						for(i=0; i<winzpad; i++) for(j=0; j<winzpad; j++) FTin2D[i*winzpad+j][0] = 0.0;
-						for(i=0; i<winzpad; i++) for(j=0; j<winzpad; j++) FTin2D[i*winzpad+j][1] = 0.0;
+						// cjfeng 06/27/2016
+						// Reduce loop overhead.
+						for(i=0; i<winzpad2; i++) {
+							FTin2D[i][0] = 0.0;
+							FTin2D[i][1] = 0.0;
+						}
+						// for(i=0; i<winzpad; i++) for(j=0; j<winzpad; j++) FTin2D[i*winzpad+j][0] = 0.0;
+						// for(i=0; i<winzpad; i++) for(j=0; j<winzpad; j++) FTin2D[i*winzpad+j][1] = 0.0;
 						// Apply Hann window, if requested
 						if(whann) {
 							for(i=0; i<window; i++) for(j=0; j<window; j++) FTin2D[i*winzpad+j][0] = creal(NREPH[POL[p]][i*window+j])*hann[i];
@@ -3222,12 +3517,14 @@ int main ( int argc, char * argv[] ) {
 
 	}
 
+	// Measuring ending time.
 	stoptime = omp_get_wtime();
 	printf("Time: %2.4f seconds \n", stoptime-starttime);
 	fprintf(lfp, "Time: %2.4f seconds \n", stoptime-starttime);
 	fflush(lfp);
-	
-	graceful_exit( error, nread, nbuffer, win2d, nthreads, npol, nise, nosc);
+
+	// Computation completed.	
+	graceful_exit( error, nbuffer, win2d, nthreads, npol, nise, nosc);
 	return 0;
 }
 
